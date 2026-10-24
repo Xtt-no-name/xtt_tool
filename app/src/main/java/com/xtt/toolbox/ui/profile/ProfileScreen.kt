@@ -15,11 +15,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,6 +36,8 @@ import androidx.compose.ui.unit.dp
 import com.xtt.toolbox.R
 import com.xtt.toolbox.data.profile.AvatarImageState
 import com.xtt.toolbox.data.profile.ProfileRules
+import com.xtt.toolbox.data.update.UpdateCheckResult
+import com.xtt.toolbox.data.update.UpdateChecker
 import com.xtt.toolbox.domain.writing.WritingDailyStat
 import com.xtt.toolbox.ui.components.AppSectionCard
 import com.xtt.toolbox.ui.components.BackupIcon
@@ -41,6 +45,9 @@ import com.xtt.toolbox.ui.components.InfoIcon
 import com.xtt.toolbox.ui.components.PenIcon
 import com.xtt.toolbox.ui.components.SectionHeader
 import com.xtt.toolbox.ui.components.TextLinesIcon
+import com.xtt.toolbox.ui.reading.ExternalLinkLauncher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun ProfileScreen(
@@ -67,6 +74,7 @@ fun ProfileScreen(
     var nicknameDraft by remember { mutableStateOf(profileState.nickname) }
     var nicknameError by remember { mutableStateOf<String?>(null) }
     var showAbout by remember { mutableStateOf(false) }
+    var showUpdateCheck by remember { mutableStateOf(false) }
     val blankInteraction = remember { MutableInteractionSource() }
     LazyColumn(
         modifier = modifier
@@ -189,6 +197,18 @@ fun ProfileScreen(
                         onClick = { showAbout = true },
                     )
                     ProfileActionRow(
+                        icon = { InfoIcon(Modifier.size(20.dp)) },
+                        title = "应用版本",
+                        description = versionName,
+                        onClick = {},
+                    )
+                    ProfileActionRow(
+                        icon = { InfoIcon(Modifier.size(20.dp)) },
+                        title = "检查更新",
+                        description = "查询 GitHub 最新稳定版本",
+                        onClick = { showUpdateCheck = true },
+                    )
+                    ProfileActionRow(
                         icon = { TextLinesIcon(Modifier.size(20.dp)) },
                         title = "应用内显示名称",
                         description = profileState.nickname,
@@ -266,6 +286,114 @@ fun ProfileScreen(
             },
         )
     }
+
+    if (showUpdateCheck) {
+        UpdateCheckDialog(
+            currentVersion = versionName,
+            onDismiss = { showUpdateCheck = false },
+        )
+    }
+}
+
+@Composable
+private fun UpdateCheckDialog(
+    currentVersion: String,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    var attempt by remember { mutableStateOf(0) }
+    var result by remember { mutableStateOf<UpdateCheckResult?>(null) }
+    var linkError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(attempt) {
+        result = null
+        linkError = null
+        result = withContext(Dispatchers.IO) {
+            UpdateChecker.check(currentVersion)
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("检查更新") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                when (val current = result) {
+                    null -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                            Text("正在查询 GitHub 最新稳定 Release…")
+                        }
+                    }
+
+                    is UpdateCheckResult.UpToDate -> {
+                        Text("当前已是最新版本。")
+                        Text("当前版本：${current.currentVersion}")
+                        Text("最新稳定版本：${current.latestVersion}")
+                    }
+
+                    is UpdateCheckResult.Available -> {
+                        Text("发现新版本 ${current.info.latestVersion}")
+                        Text("当前版本：${current.info.currentVersion}")
+                        Text(
+                            "将通过浏览器打开本项目 GitHub Release 的 APK 下载链接。" +
+                                "下载完成后，安装必须由 Android 系统确认；应用不会静默安装。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (current.info.apkSha256 != null) {
+                            Text(
+                                "SHA-256：${current.info.apkSha256}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        linkError?.let {
+                            Text(it, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+
+                    is UpdateCheckResult.Failure -> {
+                        Text("检查失败：${current.message}")
+                        Text(
+                            "请检查网络后重试；也可以在 GitHub Release 页面手动下载。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            when (val current = result) {
+                is UpdateCheckResult.Available -> {
+                    TextButton(
+                        onClick = {
+                            if (!ExternalLinkLauncher.open(context, current.info.apkUrl)) {
+                                linkError = "无法打开下载链接，请手动访问 GitHub Release"
+                            }
+                        },
+                    ) { Text("打开下载页") }
+                }
+
+                is UpdateCheckResult.Failure -> {
+                    TextButton(onClick = { attempt += 1 }) { Text("重试") }
+                }
+
+                else -> {
+                    TextButton(onClick = onDismiss) { Text("关闭") }
+                }
+            }
+        },
+        dismissButton = {
+            if (result is UpdateCheckResult.Available) {
+                TextButton(onClick = onDismiss) { Text("关闭") }
+            }
+        },
+    )
 }
 
 @Composable
