@@ -24,7 +24,7 @@ class RegexChapterParser : ChapterParser {
 
     private val patterns = listOf(
         Pattern(
-            Regex("""^第[0-9零〇一二三四五六七八九十百千万两]+[章节回](?:\s+.*)?$"""),
+            Regex("""^第\s*[0-9零〇一二三四五六七八九十百千万两]+\s*[章节回](?:\s+[:：、.\-]?\s*.*|[:：、.\-]\s*.*)?$"""),
             0.95f,
         ),
         Pattern(
@@ -54,7 +54,7 @@ class RegexChapterParser : ChapterParser {
             val lineEnd = text.indexOf('\n', lineStart).let { if (it == -1) text.length else it }
             val rawLine = text.substring(lineStart, lineEnd)
             val title = rawLine.trim()
-            if (title.isNotEmpty() && title.length <= MAX_TITLE_LENGTH) {
+            if (title.isNotEmpty()) {
                 val pattern = patterns.firstOrNull { it.regex.matches(title) }
                 if (pattern != null) {
                     val leadingWhitespace = rawLine.indexOfFirst { !it.isWhitespace() }
@@ -83,9 +83,5 @@ class RegexChapterParser : ChapterParser {
             )
         }
         return ChapterParseResult(candidates = candidates)
-    }
-
-    private companion object {
-        const val MAX_TITLE_LENGTH = 80
     }
 }

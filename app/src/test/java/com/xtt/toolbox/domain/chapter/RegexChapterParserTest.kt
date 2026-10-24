@@ -26,6 +26,62 @@ class RegexChapterParserTest {
     }
 
     @Test
+    fun recognizesHuiWithSpacesArabicNumbersAndPunctuation() {
+        val text = """
+            第 1 回 开始
+            正文一
+            第12回 继续
+            正文二
+            第一百回：结束
+            正文三
+            第一千回
+            正文四
+        """.trimIndent()
+
+        val chapters = parser.parse(text).candidates
+
+        assertEquals(
+            listOf("第 1 回 开始", "第12回 继续", "第一百回：结束", "第一千回"),
+            chapters.map { it.title },
+        )
+        assertEquals(4, chapters.size)
+    }
+
+    @Test
+    fun recognizesLongChapterTitleWithoutLengthCutoff() {
+        val longTitle = "第一章 " + "很长的标题".repeat(40)
+        val chapters = parser.parse("$longTitle\n正文").candidates
+
+        assertEquals(1, chapters.size)
+        assertEquals(longTitle, chapters.single().title)
+    }
+
+    @Test
+    fun parsesNineHundredNinetyNineChapterHeadings() {
+        val expected = (1..999).map { index ->
+            when (index % 3) {
+                0 -> "第 $index 回 标题$index"
+                1 -> "第${index}章 标题$index"
+                else -> "第${index}节：标题$index"
+            }
+        }
+        val text = buildString {
+            expected.forEachIndexed { index, heading ->
+                append(heading).append('\n')
+                append("正文").append(index + 1).append('\n')
+                if (index != expected.lastIndex) append('\n')
+            }
+        }
+
+        val chapters = parser.parse(text).candidates
+
+        assertEquals(999, chapters.size)
+        assertEquals(expected, chapters.map { it.title })
+        assertEquals(0, chapters.first().startOffset)
+        assertEquals(text.length, chapters.last().endOffset)
+    }
+
+    @Test
     fun recognizesSpecialAndVolumeHeadings() {
         val text = "序章\n引子内容\n第一卷 风起\n卷一 雨落\n正文"
         val titles = parser.parse(text).candidates.map { it.title }

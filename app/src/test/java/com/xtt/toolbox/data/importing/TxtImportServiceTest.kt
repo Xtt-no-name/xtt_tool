@@ -10,6 +10,7 @@ import com.xtt.toolbox.data.model.ReadingPosition
 import com.xtt.toolbox.data.model.ShelfType
 import com.xtt.toolbox.data.model.SourceType
 import com.xtt.toolbox.data.repository.BookRepository
+import com.xtt.toolbox.domain.chapter.RegexChapterParser
 import com.xtt.toolbox.domain.importing.TxtDocument
 import com.xtt.toolbox.domain.importing.TxtDocumentSource
 import com.xtt.toolbox.domain.importing.TxtImportException
@@ -110,6 +111,34 @@ class TxtImportServiceTest {
             runBlocking { service.prepare(URI) }
         }
         assertTrue(repo.books.value.isEmpty())
+    }
+
+    @Test
+    fun previewsAndReReadsNineHundredNinetyNineChapters() = runBlocking {
+        val text = buildString {
+            for (index in 1..999) {
+                val heading = when (index % 3) {
+                    0 -> "第 $index 回 标题$index"
+                    1 -> "第${index}章 标题$index"
+                    else -> "第${index}节：标题$index"
+                }
+                append(heading).append('\n')
+                append("正文").append(index).append('\n')
+                if (index != 999) append('\n')
+            }
+        }
+        val repo = FakeBookRepository()
+        val service = service(text, repo)
+        val preview = service.prepare(URI)
+
+        assertEquals(999, preview.chapterCount)
+        val book = service.commit(preview, "999章测试").getOrThrow()
+        val stored = store.readText(book.contentLocation!!)
+        val reparsed = RegexChapterParser().parse(stored).candidates
+
+        assertEquals(999, reparsed.size)
+        assertEquals("第 999 回 标题999", reparsed.last().title)
+        assertEquals(stored.length, reparsed.last().endOffset)
     }
 
     @Test

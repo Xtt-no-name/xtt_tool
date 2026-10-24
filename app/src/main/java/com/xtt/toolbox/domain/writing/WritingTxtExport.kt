@@ -45,9 +45,19 @@ object WritingTxtExport {
     }
 
     private fun startsWithTitle(raw: String, title: String): Boolean {
-        if (!raw.startsWith(title)) return false
-        return raw.length == title.length || raw[title.length] == '\n'
+        val firstLineEnd = raw.indexOf('\n').let { if (it < 0) raw.length else it }
+        val firstLine = raw.substring(0, firstLineEnd)
+        return normalizeHeading(firstLine) == normalizeHeading(title) &&
+            normalizeHeading(firstLine).isNotEmpty()
     }
+
+    /**
+     * 章节标题在编辑器/旧导出文件中可能带有前导空格、制表符或全角空格，
+     * 也可能使用不同数量的空白。比较标题时忽略空白字符，但只跳过第一行，
+     * 不删除正文中后续合法重复出现的标题文字。
+     */
+    private fun normalizeHeading(value: String): String =
+        value.filterNot { it.isWhitespace() || it == '\uFEFF' }
 
     private fun insertImagePlaceholders(
         document: WritingDocument,

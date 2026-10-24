@@ -31,6 +31,53 @@ class WritingTxtExportTest {
     }
 
     @Test
+    fun leadingSpacesBeforeTitleAreNotDuplicated() {
+        val document = WritingDocumentFactory.plainText(book(), "  第一章 标题\n正文", "第一章 标题")
+        val exported = WritingTxtExport.build(document)
+
+        assertEquals("第一章 标题\n正文", exported)
+        assertEquals(
+            listOf("第一章 标题"),
+            RegexChapterParser().parse(exported).candidates.map { it.title },
+        )
+    }
+
+    @Test
+    fun tabBeforeTitleIsNotDuplicated() {
+        val document = WritingDocumentFactory.plainText(book(), "\t第一章 标题\n正文", "第一章 标题")
+        assertEquals("第一章 标题\n正文", WritingTxtExport.build(document))
+    }
+
+    @Test
+    fun exportImportRoundTripDoesNotAccumulateHeadings() {
+        val first = WritingTxtExport.build(
+            WritingDocumentFactory.plainText(book(), "  第一章 标题\n正文", "第一章 标题"),
+        )
+        val second = WritingTxtExport.build(
+            WritingDocumentFactory.plainText(book(), first, "第一章 标题"),
+        )
+
+        assertEquals(first, second)
+        assertEquals(1, first.lines().count { it == "第一章 标题" })
+    }
+
+    @Test
+    fun bodyFirstLineEqualToTitleIsNotGloballyRemoved() {
+        val document = WritingDocumentFactory.plainText(
+            book(),
+            "第一章\n第一章\n正文",
+            "第一章",
+        )
+        val exported = WritingTxtExport.build(document)
+
+        assertEquals("第一章\n第一章\n正文", exported)
+        assertTrue(exported.lines().count { it == "第一章" } == 2)
+        // 该格式本身有歧义：第二行与标题完全相同，解析器按独立章节标题处理。
+        // 导出器必须保留它，不能为了“看起来只出现一次”而删除合法正文。
+        assertEquals(2, RegexChapterParser().parse(exported).candidates.size)
+    }
+
+    @Test
     fun imageBecomesReadablePlaceholderWithoutResourcePath() {
         val base = WritingDocumentFactory.plainText(book(), "前文\n后文", "")
         val image = BookBlock(

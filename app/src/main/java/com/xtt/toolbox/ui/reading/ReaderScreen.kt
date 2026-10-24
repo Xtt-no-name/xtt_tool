@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -1142,13 +1143,12 @@ private fun ReaderIdleFooter(state: ReaderUiState) {
             timeText = formatter.format(Date())
         }
     }
-    // 这里不使用高度较大的卡片；Footer 位于正文滚动容器之外，
-    // 由 Column 实际占位，正文不会滚到文字后方。
-    // ReaderScreen 已在 AppRoot Scaffold 的 innerPadding 内，系统导航栏
-    // 已由宿主避让；此处不再叠加 navigationBarsPadding，避免双倍空白。
+    // Footer 直接贴住阅读器底部，必须显式避让系统导航栏；
+    // 不能假设外层 Scaffold 的 innerPadding 已经覆盖手势/三键导航区域。
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .navigationBarsPadding()
             .padding(horizontal = 16.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1335,6 +1335,7 @@ private fun ReaderBottomBar(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .navigationBarsPadding()
                 .padding(horizontal = 20.dp, vertical = 10.dp),
         ) {
             Row(
