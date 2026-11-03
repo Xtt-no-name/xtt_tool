@@ -122,4 +122,69 @@ class RegexChapterParserTest {
         assertEquals(10, chapters[1].headingOffset)
         assertEquals(text.length, chapters[1].endOffset)
     }
+
+    @Test
+    fun filtersLeadingDirectoryWhenTitlesRepeat() {
+        val text = """
+            第一章 开端
+            第二章 发展
+            第三章 高潮
+            第一章 开端
+            正文一
+            第二章 发展
+            正文二
+            第三章 高潮
+            正文三
+        """.trimIndent()
+
+        val result = parser.parse(text)
+
+        assertEquals(listOf("第一章 开端", "第二章 发展", "第三章 高潮"), result.candidates.map { it.title })
+        assertEquals(3, result.candidates.size)
+        assertTrue(result.warnings.any { it.contains("目录") })
+    }
+
+    @Test
+    fun parsesChineseNumbersByPlaceValue() {
+        assertEquals(123, parser.parseNumber("一百二十三"))
+        assertEquals(1001, parser.parseNumber("一千零一"))
+        assertEquals(10_000, parser.parseNumber("一万"))
+        assertEquals(2, parser.parseNumber("两"))
+    }
+
+    @Test
+    fun supportsFullWidthWhitespaceAndTabs() {
+        val text = "\t第　一　回　标题\n正文"
+        val chapters = parser.parse(text).candidates
+
+        assertEquals(1, chapters.size)
+        assertEquals("第　一　回　标题", chapters.single().title)
+    }
+
+    @Test
+    fun warnsAboutNumberJumpsAndRollbacksButKeepsChapterText() {
+        val text = "第一章\n正文一\n第三章\n正文三\n第二章\n正文二"
+        val result = parser.parse(text)
+
+        assertEquals(3, result.candidates.size)
+        assertTrue(result.warnings.any { it.contains("跳跃") })
+        assertTrue(result.warnings.any { it.contains("回退") })
+        result.candidates.zipWithNext().forEach { (left, right) ->
+            assertEquals(left.endOffset, right.startOffset)
+        }
+    }
+
+    @Test
+    fun ignoresAdvertisementAndUrlLines() {
+        val text = "第一章 开始\n正文\n最新网址 http://example.com\n请收藏本站\n第二章 继续\n正文"
+        val chapters = parser.parse(text).candidates
+
+        assertEquals(listOf("第一章 开始", "第二章 继续"), chapters.map { it.title })
+    }
+
+    @Test
+    fun doesNotMatchInlineSentenceWithChapterWords() {
+        val text = "他说第一章的内容还没有写完，也没有独立的章节标题。"
+        assertTrue(parser.parse(text).candidates.isEmpty())
+    }
 }

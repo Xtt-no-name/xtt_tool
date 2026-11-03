@@ -35,6 +35,7 @@ xtt的工具箱是一款以**本地个人阅读、写作为核心**的 Android �
 - 主题模式、阅读设置和编辑器设置；
 - 搜索历史开关、图片 Markdown 目录选择等本地设置；
 - “我的 → 关于”显示当前版本，并可检查本项目 GitHub 最新稳定 Release；
+- 首次安装或升级后，首页会显示当前版本的更新内容公告；同一版本关闭后不再重复显示；
 - 更新检查只打开 HTTPS 下载页，下载和安装由浏览器及 Android 系统完成，不静默安装。
 
 ## 支持的文件格式
@@ -63,7 +64,7 @@ Markdown 和 EPUB 的解析范围以项目当前实现为准，不保证兼容�
 以仓库当前配置为准：
 
 - 应用包名：`com.xtt.toolbox`
-- 版本：`versionCode = 3`，`versionName = 1.0.2`
+- 版本：`versionCode = 4`，`versionName = 1.0.3`
 - Android Gradle Plugin：`9.4.1`
 - Gradle Wrapper：`9.6.0`
 - Kotlin：`2.2.10`
@@ -99,9 +100,10 @@ Markdown 和 EPUB 的解析范围以项目当前实现为准，不保证兼容�
 
 - 源码已经公开在 GitHub，公开分支为 `main`；
 - 1.0 已发布为正式 GitHub Release；
-- 当前源码版本为 1.0.2；
-- 1.0 和 1.0.1 已发布；1.0.2 的 APK/Tag/Release 发布状态以 GitHub Releases 页面为准；
-- 应用内更新检查仅检查本项目稳定 Release，并打开浏览器下载页；
+- 当前源码版本为 1.0.3；
+- 1.0、1.0.1、1.0.2 已发布；1.0.3 发布后以 GitHub Releases 页面为准；
+- 应用内首次进入首页会展示当前版本的更新内容公告，只对每个安装版本展示一次；
+- 应用内更新检查仅检查本项目稳定 Release，以 Release 中的 versionCode 比较，并打开浏览器下载页；
 - 不使用静默安装，也不会绕过 Android 的安装确认与未知来源设置。
 
 ## 已知限制

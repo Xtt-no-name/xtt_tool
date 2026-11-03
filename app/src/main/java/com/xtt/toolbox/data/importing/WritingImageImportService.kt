@@ -2,13 +2,17 @@ package com.xtt.toolbox.data.importing
 
 import android.content.ContentResolver
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
 import com.xtt.toolbox.domain.content.BookResource
 import com.xtt.toolbox.domain.content.BookResourceKind
 import com.xtt.toolbox.domain.content.ImageFormatDetector
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -106,7 +110,149 @@ class WritingImageImportService(
         runCatching { image.stagingFile.delete() }
     }
 
+    /**
+     * 只解码一份供裁剪界面使用的中等尺寸位图，不创建 staged 资源。
+     * 与头像裁剪相同：限制解码尺寸、应用 EXIF 方向，取消时不产生图片文件。
+     */
+    suspend fun loadEditableImage(uri: String): Result<Bitmap> = withContext(Dispatchers.IO) {
+        runCatching {
+            val bytes = readBytes(uri)
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                throw IOException("图片无法解码")
+            }
+            var sample = 1
+            while (bounds.outWidth / sample > MAX_EDITABLE_EDGE ||
+                bounds.outHeight / sample > MAX_EDITABLE_EDGE
+            ) {
+                sample *= 2
+            }
+            val decoded = BitmapFactory.decodeByteArray(
+                bytes,
+                0,
+                bytes.size,
+                BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                },
+            ) ?: throw IOException("图片无法解码")
+            val orientation = runCatching {
+                ExifInterface(ByteArrayInputStream(bytes)).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL,
+                )
+            }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+            applyOrientation(decoded, orientation)
+        }
+    }
+
+    /** 保存裁剪后的 JPEG/PNG 字节，复用与相册导入相同的内部资源约束。 */
+    suspend fun importBytes(
+        bookId: String,
+        bytes: ByteArray,
+    ): Result<ImportedWritingImage> = withContext(Dispatchers.IO) {
+        runCatching { saveStaged(bookId, bytes) }
+    }
+
+    private fun readBytes(uri: String): ByteArray {
+        val parsed = Uri.parse(uri)
+        return contentResolver.openInputStream(parsed)?.use { input ->
+            val buffer = java.io.ByteArrayOutputStream()
+            val chunk = ByteArray(64 * 1024)
+            var total = 0
+            while (true) {
+                val count = input.read(chunk)
+                if (count < 0) break
+                total += count
+                if (total > MAX_IMAGE_BYTES) {
+                    throw IOException("图片文件过大，最大支持 32 MB")
+                }
+                buffer.write(chunk, 0, count)
+            }
+            buffer.toByteArray().also {
+                if (it.isEmpty()) throw IOException("所选图片内容为空")
+                if (ImageFormatDetector.detect(it) == null) {
+                    throw IOException("不支持的图片格式（仅支持 JPEG、PNG、WebP 等常见格式）")
+                }
+            }
+        } ?: throw IOException("无法读取所选图片")
+    }
+
+    private fun saveStaged(bookId: String, bytes: ByteArray): ImportedWritingImage {
+        if (bytes.isEmpty()) throw IOException("图片内容为空")
+        val format = ImageFormatDetector.detect(bytes)
+            ?: throw IOException("不支持的图片格式（仅支持 JPEG、PNG、WebP 等常见格式）")
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            throw IOException("图片无法解码")
+        }
+
+        val stagingDir = File(context.filesDir, "writing-image-staging/$bookId")
+        val id = "writing-image-${UUID.randomUUID()}"
+        val relativePath = "editor/images/$id.${format.extension}"
+        val target = File(stagingDir, "$id.${format.extension}")
+        if (!stagingDir.exists() && !stagingDir.mkdirs()) {
+            throw IOException("无法创建应用内部图片暂存目录")
+        }
+        val temp = File(stagingDir, ".tmp-$id")
+        try {
+            FileOutputStream(temp).use { stream ->
+                stream.write(bytes)
+                stream.flush()
+                stream.fd.sync()
+            }
+            if (temp.length() != bytes.size.toLong()) {
+                throw IOException("图片写入不完整")
+            }
+            if (!temp.renameTo(target)) {
+                throw IOException("图片暂存移动失败")
+            }
+        } finally {
+            if (temp.exists()) temp.delete()
+        }
+        val sha256 = MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+        return ImportedWritingImage(
+            resource = BookResource(
+                resourceId = id,
+                relativePath = relativePath,
+                mediaType = format.mediaType,
+                sizeBytes = bytes.size.toLong(),
+                sha256 = sha256,
+                kind = BookResourceKind.IMAGE,
+            ),
+            bytes = bytes,
+            stagingFile = target,
+        )
+    }
+
+    private fun applyOrientation(source: Bitmap, orientation: Int): Bitmap {
+        val matrix = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                matrix.postRotate(90f)
+                matrix.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                matrix.postRotate(270f)
+                matrix.postScale(-1f, 1f)
+            }
+            else -> return source
+        }
+        val rotated = Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+        if (rotated !== source) source.recycle()
+        return rotated
+    }
+
     private companion object {
         const val MAX_IMAGE_BYTES = 32 * 1024 * 1024
+        const val MAX_EDITABLE_EDGE = 1600
     }
 }

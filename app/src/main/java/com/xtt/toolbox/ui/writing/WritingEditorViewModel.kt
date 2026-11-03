@@ -2,10 +2,12 @@ package com.xtt.toolbox.ui.writing
 
 import android.app.Application
 import android.content.Context
+import android.graphics.Bitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.xtt.toolbox.data.AppContainerProvider
 import com.xtt.toolbox.data.importing.ImportedWritingImage
+import com.xtt.toolbox.data.profile.AvatarCrop
 import com.xtt.toolbox.domain.content.BookBlockType
 import com.xtt.toolbox.domain.content.ExtractedResource
 import com.xtt.toolbox.domain.writing.WritingChapterDraft
@@ -62,6 +64,8 @@ data class WritingEditorUiState(
     val settingsMessage: String? = null,
     val imagePaths: Map<String, String> = emptyMap(),
     val lastInsertedImageId: String? = null,
+    val imageCropBitmap: Bitmap? = null,
+    val imageCropBusy: Boolean = false,
     val findQuery: String = "",
     val replaceQuery: String = "",
     val findMatches: List<IntRange> = emptyList(),
@@ -321,9 +325,7 @@ class WritingEditorViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun importImage(uri: String) {
-        val state = _uiState.value
-        val bookId = state.bookId ?: return
-        val draft = state.draft ?: return
+        val bookId = _uiState.value.bookId ?: return
         viewModelScope.launch {
             val imported = imageImportService.import(bookId, uri).getOrElse { error ->
                 _uiState.update {
@@ -331,29 +333,129 @@ class WritingEditorViewModel(application: Application) : AndroidViewModel(applic
                 }
                 return@launch
             }
-            val anchor = state.selectionStart.coerceIn(0, draft.text.length)
-            val image = WritingChapterImage(
-                anchor = anchor,
-                blockId = "writing-image-block-${UUID.randomUUID()}",
-                resourceId = imported.resource.resourceId,
-                alt = null,
-            )
-            pendingImages[imported.resource.resourceId] = imported
-            val placement = WritingParagraph.afterImage(draft.text, anchor)
-            val updated = WritingChapterEditor.updateText(draft, placement.text).copy(
-                images = draft.images + image,
-            ).normalized()
-            val cursor = placement.cursor
-            _uiState.update {
-                it.copy(
-                    imagePaths = it.imagePaths + (
-                        imported.resource.resourceId to imported.stagingFile.absolutePath
-                        ),
-                    lastInsertedImageId = image.blockId,
-                )
-            }
-            applyDraft(updated, cursor, cursor)
+            insertImportedImage(imported)
         }
+    }
+
+    /** 先读取可裁剪位图；用户确认后才写入内部资源，取消不会复制原图。 */
+    fun prepareImageCrop(uri: String) {
+        val state = _uiState.value
+        if (state.bookId == null) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(imageCropBusy = true, message = null) }
+            imageImportService.loadEditableImage(uri).fold(
+                onSuccess = { bitmap ->
+                    _uiState.value.imageCropBitmap?.takeIf { it !== bitmap }?.recycle()
+                    _uiState.update {
+                        it.copy(imageCropBitmap = bitmap, imageCropBusy = false)
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(
+                            imageCropBusy = false,
+                            message = error.message ?: "图片读取失败",
+                        )
+                    }
+                },
+            )
+        }
+    }
+
+    fun cancelImageCrop() {
+        val bitmap = _uiState.value.imageCropBitmap
+        _uiState.update { it.copy(imageCropBitmap = null, imageCropBusy = false) }
+        if (bitmap != null && !bitmap.isRecycled) bitmap.recycle()
+    }
+
+    fun confirmImageCrop(
+        zoom: Float,
+        offsetX: Float,
+        offsetY: Float,
+        viewportPx: Float,
+    ) {
+        val state = _uiState.value
+        val source = state.imageCropBitmap ?: return
+        val bookId = state.bookId ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(imageCropBusy = true) }
+            val cropped = runCatching {
+                AvatarCrop.crop(
+                    source = source,
+                    zoom = zoom,
+                    offsetX = offsetX,
+                    offsetY = offsetY,
+                    viewportPx = viewportPx,
+                    outputSize = CROPPED_IMAGE_SIZE,
+                )
+            }.getOrElse { error ->
+                _uiState.update {
+                    it.copy(
+                        imageCropBusy = false,
+                        message = error.message ?: "图片裁剪失败",
+                    )
+                }
+                return@launch
+            }
+            val bytes = runCatching {
+                java.io.ByteArrayOutputStream().use { output ->
+                    if (!cropped.compress(Bitmap.CompressFormat.JPEG, 90, output)) {
+                        error("图片编码失败")
+                    }
+                    output.toByteArray()
+                }
+            }.getOrElse { error ->
+                if (!cropped.isRecycled) cropped.recycle()
+                _uiState.update {
+                    it.copy(
+                        imageCropBusy = false,
+                        message = error.message ?: "图片编码失败",
+                    )
+                }
+                return@launch
+            }
+            val imported = imageImportService.importBytes(bookId, bytes).getOrElse { error ->
+                if (!cropped.isRecycled) cropped.recycle()
+                _uiState.update {
+                    it.copy(
+                        imageCropBusy = false,
+                        message = error.message ?: "图片保存失败",
+                    )
+                }
+                return@launch
+            }
+            insertImportedImage(imported)
+            _uiState.update { it.copy(imageCropBitmap = null, imageCropBusy = false) }
+            if (!cropped.isRecycled) cropped.recycle()
+            if (!source.isRecycled) source.recycle()
+        }
+    }
+
+    private fun insertImportedImage(imported: ImportedWritingImage) {
+        val state = _uiState.value
+        val draft = state.draft ?: return
+        val anchor = state.selectionStart.coerceIn(0, draft.text.length)
+        val image = WritingChapterImage(
+            anchor = anchor,
+            blockId = "writing-image-block-${UUID.randomUUID()}",
+            resourceId = imported.resource.resourceId,
+            alt = null,
+        )
+        pendingImages[imported.resource.resourceId] = imported
+        val placement = WritingParagraph.afterImage(draft.text, anchor)
+        val updated = WritingChapterEditor.updateText(draft, placement.text).copy(
+            images = draft.images + image,
+        ).normalized()
+        val cursor = placement.cursor
+        _uiState.update {
+            it.copy(
+                imagePaths = it.imagePaths + (
+                    imported.resource.resourceId to imported.stagingFile.absolutePath
+                    ),
+                lastInsertedImageId = image.blockId,
+            )
+        }
+        applyDraft(updated, cursor, cursor)
     }
 
     fun consumeInsertedImageFocus() {
@@ -974,6 +1076,7 @@ class WritingEditorViewModel(application: Application) : AndroidViewModel(applic
     private companion object {
         const val AUTOSAVE_DELAY_MS = 700L
         const val MAX_HISTORY = 100
+        const val CROPPED_IMAGE_SIZE = 1600
         const val EDITOR_PREFERENCES = "writing_editor"
         const val KEY_SHOW_FORMAT_BAR = "show_format_bar"
         const val KEY_SHOW_QUICK_BAR = "show_quick_bar"

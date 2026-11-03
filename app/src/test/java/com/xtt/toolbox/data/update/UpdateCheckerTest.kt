@@ -5,6 +5,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.json.JSONArray
+import org.json.JSONObject
 
 class UpdateCheckerTest {
     @Test
@@ -61,4 +63,66 @@ class UpdateCheckerTest {
             ),
         )
     }
+
+    @Test
+    fun comparesReleaseVersionCodeInsteadOfVersionNameOnly() {
+        val json = releaseJson(tag = "v9.9.9", versionCode = 4)
+
+        val newer = UpdateChecker.parseLatestRelease(json, "1.0.2", 3)
+        assertTrue(newer is UpdateCheckResult.Available)
+        assertEquals(4, (newer as UpdateCheckResult.Available).info.latestVersionCode)
+
+        val same = UpdateChecker.parseLatestRelease(json, "1.0.3", 4)
+        assertTrue(same is UpdateCheckResult.UpToDate)
+
+        val newerLocal = UpdateChecker.parseLatestRelease(json, "1.0.4", 5)
+        assertTrue(newerLocal is UpdateCheckResult.UpToDate)
+    }
+
+    @Test
+    fun rejectsReleaseWithoutVersionCode() {
+        val json = releaseJson(tag = "v1.0.4", versionCode = null)
+        assertTrue(UpdateChecker.parseLatestRelease(json, "1.0.3", 4) is UpdateCheckResult.Failure)
+    }
+
+    @Test
+    fun rejectsDraftAndPrerelease() {
+        val draft = releaseJson(tag = "v1.0.4", versionCode = 5, draft = true)
+        val prerelease = releaseJson(tag = "v1.0.4", versionCode = 5, prerelease = true)
+        assertTrue(UpdateChecker.parseLatestRelease(draft, "1.0.3", 4) is UpdateCheckResult.Failure)
+        assertTrue(UpdateChecker.parseLatestRelease(prerelease, "1.0.3", 4) is UpdateCheckResult.Failure)
+    }
+
+    private fun releaseJson(
+        tag: String,
+        versionCode: Int?,
+        prerelease: Boolean = false,
+        draft: Boolean = false,
+    ): String = JSONObject().apply {
+        put("tag_name", tag)
+        put("html_url", "https://github.com/Xtt-no-name/xtt_tool/releases/tag/$tag")
+        put("prerelease", prerelease)
+        put("draft", draft)
+        put(
+            "body",
+            buildString {
+                append("## 更新\n")
+                if (versionCode != null) append("versionCode：").append(versionCode).append('\n')
+                append("这是测试 Release。")
+            },
+        )
+        put(
+            "assets",
+            JSONArray().put(
+                JSONObject().apply {
+                    put("name", "xtt-toolbox-$tag.apk")
+                    put(
+                        "browser_download_url",
+                        "https://github.com/Xtt-no-name/xtt_tool/releases/download/$tag/xtt-toolbox-$tag.apk",
+                    )
+                    put("digest", "sha256:abc123")
+                },
+            ),
+        )
+    }.toString()
 }

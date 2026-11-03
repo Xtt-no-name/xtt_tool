@@ -9,6 +9,7 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -34,6 +35,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -41,10 +43,13 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.ParagraphStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -94,6 +99,7 @@ fun ImageChapterEditorBody(
     onDeleteImage: (String) -> Unit,
     onConsumeInsertedImageFocus: () -> Unit,
     scrollState: androidx.compose.foundation.ScrollState,
+    viewportHeight: Int,
     header: @Composable () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -180,6 +186,37 @@ fun ImageChapterEditorBody(
                             selection = TextRange(displaySelectionStart, displaySelectionEnd),
                         )
                     }
+                    var segmentLayout by remember(node.key) {
+                        mutableStateOf<TextLayoutResult?>(null)
+                    }
+                    var segmentTop by remember(node.key) { mutableStateOf(0f) }
+                    val cursorMarginPx = with(LocalDensity.current) { 24.dp.toPx() }
+                    LaunchedEffect(
+                        node.key,
+                        displaySelectionStart,
+                        displaySelectionEnd,
+                        segmentLayout,
+                        segmentTop,
+                        viewportHeight,
+                    ) {
+                        if (viewportHeight <= 0) return@LaunchedEffect
+                        val layout = segmentLayout ?: return@LaunchedEffect
+                        val offset = displaySelectionStart.coerceIn(0, layout.layoutInput.text.length)
+                        val cursor = runCatching { layout.getCursorRect(offset) }.getOrNull()
+                            ?: return@LaunchedEffect
+                        val contentTop = segmentTop + cursor.top
+                        val contentBottom = segmentTop + cursor.bottom
+                        val visibleTop = scrollState.value
+                        val visibleBottom = visibleTop + viewportHeight
+                        val target = when {
+                            contentBottom > visibleBottom - cursorMarginPx ->
+                                contentBottom - viewportHeight + cursorMarginPx
+                            contentTop < visibleTop + cursorMarginPx ->
+                                contentTop - cursorMarginPx
+                            else -> return@LaunchedEffect
+                        }
+                        scrollState.scrollTo(target.toInt().coerceIn(0, scrollState.maxValue))
+                    }
                     val quoteColor = MaterialTheme.colorScheme.onSurfaceVariant
                     val matchColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.62f)
                     val currentMatchColor = MaterialTheme.colorScheme.primaryContainer
@@ -240,9 +277,11 @@ fun ImageChapterEditorBody(
                                 updated.composition != null,
                             )
                         },
+                        onTextLayout = { segmentLayout = it },
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = 30.dp)
+                            .onGloballyPositioned { segmentTop = it.positionInParent().y }
                             .focusRequester(requester(node.key))
                             .onFocusChanged { focus ->
                                 if (focus.isFocused) onClearImageSelection()
@@ -363,8 +402,10 @@ private fun WritingBlockImage(
             Image(
                 bitmap = bitmap!!.asImageBitmap(),
                 contentDescription = image.alt ?: "正文图片",
-                modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp),
-                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(bitmap!!.width.toFloat() / bitmap!!.height),
+                contentScale = ContentScale.FillWidth,
             )
         } else {
             Text(

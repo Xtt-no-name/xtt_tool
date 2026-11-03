@@ -7,16 +7,20 @@ import java.net.URL
 
 data class UpdateInfo(
     val currentVersion: String,
+    val currentVersionCode: Int,
     val latestVersion: String,
+    val latestVersionCode: Int,
     val releaseUrl: String,
     val apkUrl: String,
     val apkSha256: String?,
+    val releaseNotes: String?,
 )
 
 sealed interface UpdateCheckResult {
     data class UpToDate(
         val currentVersion: String,
         val latestVersion: String,
+        val latestVersionCode: Int,
     ) : UpdateCheckResult
 
     data class Available(val info: UpdateInfo) : UpdateCheckResult
@@ -36,8 +40,9 @@ object UpdateChecker {
     private const val RELEASE_URL_PREFIX = "https://github.com/$REPOSITORY/releases/"
     private const val DOWNLOAD_URL_PREFIX = "https://github.com/$REPOSITORY/releases/download/"
     private const val USER_AGENT = "xtt-toolbox-android-update-check"
+    private val VERSION_CODE_PATTERN = Regex("""(?i)versionCode\s*[:：]\s*(\d+)""")
 
-    fun check(currentVersion: String): UpdateCheckResult {
+    fun check(currentVersion: String, currentVersionCode: Int): UpdateCheckResult {
         val body = try {
             requestLatestRelease()
         } catch (e: IOException) {
@@ -47,7 +52,7 @@ object UpdateChecker {
         }
 
         return try {
-            parseLatestRelease(body, currentVersion)
+            parseLatestRelease(body, currentVersion, currentVersionCode)
         } catch (e: Exception) {
             UpdateCheckResult.Failure("GitHub Release 数据格式异常")
         }
@@ -56,6 +61,7 @@ object UpdateChecker {
     internal fun parseLatestRelease(
         jsonText: String,
         currentVersion: String,
+        currentVersionCode: Int,
     ): UpdateCheckResult {
         val json = JSONObject(jsonText)
         if (json.optBoolean("draft") || json.optBoolean("prerelease")) {
@@ -69,6 +75,11 @@ object UpdateChecker {
         if (parseVersion(currentVersion) == null) {
             return UpdateCheckResult.Failure("无法识别当前版本号")
         }
+
+        val releaseNotes = json.optString("body").trim().takeIf { it.isNotEmpty() }
+        val latestVersionCode = VERSION_CODE_PATTERN.find(releaseNotes.orEmpty())
+            ?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?: return UpdateCheckResult.Failure("Release 缺少 versionCode 信息")
 
         val releaseUrl = json.optString("html_url")
         if (!isAllowedReleaseUrl(releaseUrl)) {
@@ -96,16 +107,19 @@ object UpdateChecker {
             return UpdateCheckResult.Failure("Release 中没有可用的 APK 下载地址")
         }
 
-        return when (val comparison = compareVersions(latestVersion, currentVersion)) {
-            null -> UpdateCheckResult.Failure("无法比较版本号")
-            0, -1 -> UpdateCheckResult.UpToDate(currentVersion, latestVersion)
-            else -> UpdateCheckResult.Available(
+        return if (latestVersionCode <= currentVersionCode) {
+            UpdateCheckResult.UpToDate(currentVersion, latestVersion, latestVersionCode)
+        } else {
+            UpdateCheckResult.Available(
                 UpdateInfo(
                     currentVersion = currentVersion,
+                    currentVersionCode = currentVersionCode,
                     latestVersion = latestVersion,
+                    latestVersionCode = latestVersionCode,
                     releaseUrl = releaseUrl,
                     apkUrl = apkUrl,
                     apkSha256 = apkSha256,
+                    releaseNotes = releaseNotes,
                 ),
             )
         }

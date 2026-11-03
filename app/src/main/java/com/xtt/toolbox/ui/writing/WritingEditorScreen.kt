@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -62,6 +63,8 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -103,6 +106,7 @@ import com.xtt.toolbox.ui.components.SmartFormatIcon
 import com.xtt.toolbox.ui.components.TextLinesIcon
 import com.xtt.toolbox.ui.components.ToolboxIcon
 import com.xtt.toolbox.ui.components.UndoIcon
+import com.xtt.toolbox.ui.profile.AvatarCropDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -128,6 +132,8 @@ fun WritingEditorScreen(
     val onInsertPunctuation = callbacks.onInsertPunctuation
     val onDeleteImage = callbacks.onDeleteImage
     val onConsumeInsertedImageFocus = callbacks.onConsumeInsertedImageFocus
+    val onCancelImageCrop = callbacks.onCancelImageCrop
+    val onConfirmImageCrop = callbacks.onConfirmImageCrop
     val onAddPunctuation = callbacks.onAddPunctuation
     val onRemovePunctuation = callbacks.onRemovePunctuation
     val onMovePunctuation = callbacks.onMovePunctuation
@@ -244,6 +250,35 @@ fun WritingEditorScreen(
     }
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
     var editorBodyHeight by remember { mutableStateOf(0) }
+    var textFieldTop by remember { mutableStateOf(0f) }
+    val cursorMarginPx = with(density) { 24.dp.toPx() }
+
+    // BasicTextField 自身不负责滚动外层 verticalScroll；根据光标矩形主动把光标带入可见区。
+    LaunchedEffect(
+        state.selectionStart,
+        state.selectionEnd,
+        textLayoutResult,
+        editorBodyHeight,
+        textFieldTop,
+    ) {
+        if (state.selectionStart < bodyStart || editorBodyHeight <= 0) return@LaunchedEffect
+        val layout = textLayoutResult ?: return@LaunchedEffect
+        val localOffset = (state.selectionStart - bodyStart)
+            .coerceIn(0, layout.layoutInput.text.length)
+        val cursor = runCatching { layout.getCursorRect(localOffset) }.getOrNull()
+            ?: return@LaunchedEffect
+        val contentTop = textFieldTop + cursor.top
+        val contentBottom = textFieldTop + cursor.bottom
+        val visibleTop = editorScroll.value
+        val visibleBottom = visibleTop + editorBodyHeight
+        val target = when {
+            contentBottom > visibleBottom - cursorMarginPx ->
+                contentBottom - editorBodyHeight + cursorMarginPx
+            contentTop < visibleTop + cursorMarginPx -> contentTop - cursorMarginPx
+            else -> return@LaunchedEffect
+        }
+        editorScroll.scrollTo(target.toInt().coerceIn(0, editorScroll.maxValue))
+    }
 
     LaunchedEffect(
         showFindReplace,
@@ -391,6 +426,7 @@ fun WritingEditorScreen(
                         onDeleteImage = onDeleteImage,
                         onConsumeInsertedImageFocus = onConsumeInsertedImageFocus,
                         scrollState = editorScroll,
+                        viewportHeight = editorBodyHeight,
                         header = chapterTitleContent,
                         modifier = Modifier.fillMaxSize(),
                     )
@@ -416,6 +452,7 @@ fun WritingEditorScreen(
                             onTextLayout = { textLayoutResult = it },
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .onGloballyPositioned { textFieldTop = it.positionInParent().y }
                                 .focusRequester(editorFocus),
                             visualTransformation = transformation ?: VisualTransformation.None,
                             textStyle = MaterialTheme.typography.bodyLarge.copy(
@@ -509,6 +546,18 @@ fun WritingEditorScreen(
                 onResetPunctuation = onResetPunctuation,
             )
         }
+
+        state.imageCropBitmap?.let { bitmap ->
+            AvatarCropDialog(
+                bitmap = bitmap,
+                busy = state.imageCropBusy,
+                onCancel = onCancelImageCrop,
+                onConfirm = onConfirmImageCrop,
+                title = "裁剪图片",
+                confirmLabel = "使用此图片",
+                description = "双指缩放，拖动调整位置；方框内区域会成为图片。",
+            )
+        }
     }
 
     if (showFindReplace) {
@@ -556,7 +605,6 @@ private fun WritingEditorTopBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .statusBarsPadding()
                 .padding(horizontal = 4.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -839,9 +887,9 @@ private fun WritingEditorImageCard(
             contentDescription = alt,
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 280.dp)
+                .aspectRatio(bitmap!!.width.toFloat() / bitmap!!.height)
                 .clip(RoundedCornerShape(6.dp)),
-            contentScale = ContentScale.Fit,
+            contentScale = ContentScale.FillWidth,
         )
     } else {
         Box(

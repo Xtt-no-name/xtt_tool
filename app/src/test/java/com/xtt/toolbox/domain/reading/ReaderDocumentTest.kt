@@ -127,7 +127,7 @@ class ReaderDocumentTest {
 
     @Test
     fun chapterParserOffsetsStayInsideReaderText() {
-        val text = "前言\n第一章 开始\n正文\n第二章 继续\n结尾"
+        val text = "开篇\n第一章 开始\n正文\n第二章 继续\n结尾"
         val chapters = RegexChapterParser().parse(text).candidates
         val document = ReaderDocument.fromText(text)
 
@@ -185,7 +185,7 @@ class ReaderDocumentTest {
 
     @Test
     fun chapterTitleUsesNearestParsedChapter() {
-        val text = "前言\n第一章 开始\n正文\n第二章 继续\n结尾"
+        val text = "开篇\n第一章 开始\n正文\n第二章 继续\n结尾"
         val chapters = RegexChapterParser().parse(text).candidates
 
         assertNull(ReaderChapterTitle.titleAt(chapters, 0))

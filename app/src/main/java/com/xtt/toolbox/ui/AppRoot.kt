@@ -8,6 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
@@ -43,6 +44,13 @@ import com.xtt.toolbox.data.importing.BookImportSelectionRouter
 import com.xtt.toolbox.data.model.ShelfType
 import com.xtt.toolbox.data.profile.AvatarImageState
 import com.xtt.toolbox.data.profile.AvatarLoader
+import com.xtt.toolbox.data.update.ReleaseNotes
+import com.xtt.toolbox.data.update.ReleaseNotesCatalog
+import com.xtt.toolbox.data.update.ReleaseNoticePolicy
+import com.xtt.toolbox.data.update.ReleaseNoticeStore
+import com.xtt.toolbox.data.update.UpdateChecker
+import com.xtt.toolbox.data.update.UpdateCheckResult
+import com.xtt.toolbox.data.update.UpdateInfo
 import com.xtt.toolbox.domain.content.BookResourceKind
 import com.xtt.toolbox.domain.writing.WritingDailyStat
 import com.xtt.toolbox.domain.writing.WritingEpubExport
@@ -159,10 +167,71 @@ fun AppRoot() {
     }
     val selectedTab = MainTab.entries.firstOrNull { it.name == selectedTabName } ?: MainTab.READING
     val tabStateHolder = rememberSaveableStateHolder()
+    val versionInfo = remember(context) {
+        runCatching { context.packageManager.getPackageInfo(context.packageName, 0) }.getOrNull()
+    }
+    val currentVersionName = versionInfo?.versionName ?: "未知"
+    val currentVersionCode = versionInfo?.let { info ->
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            info.longVersionCode.toInt()
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode
+        }
+    } ?: 0
+    val releaseNoticeStore = remember(context) { ReleaseNoticeStore(context) }
+    var releaseNotesNotice by remember { mutableStateOf<ReleaseNotes?>(null) }
+    var availableUpdateNotice by remember { mutableStateOf<UpdateInfo?>(null) }
+    var localNoticeChecked by remember { mutableStateOf(false) }
+    var remoteNoticeChecked by remember { mutableStateOf(false) }
+    val isHomeVisible = selectedTab == MainTab.READING &&
+        !showProfile &&
+        !showReadingSearch &&
+        !readerState.isVisible &&
+        !importState.isVisible
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
+
+    fun checkRemoteUpdate() {
+        if (remoteNoticeChecked || !isHomeVisible) return
+        remoteNoticeChecked = true
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                UpdateChecker.check(currentVersionName, currentVersionCode)
+            }
+            if (result is UpdateCheckResult.Available &&
+                ReleaseNoticePolicy.shouldShowRemote(
+                    currentVersionCode = currentVersionCode,
+                    latestVersionCode = result.info.latestVersionCode,
+                    lastNotifiedVersionCode = releaseNoticeStore.lastNotifiedAvailableVersionCode,
+                )
+            ) {
+                availableUpdateNotice = result.info
+            }
+        }
+    }
+
+    LaunchedEffect(isHomeVisible) {
+        if (!isHomeVisible || releaseNotesNotice != null || availableUpdateNotice != null) {
+            return@LaunchedEffect
+        }
+        if (!localNoticeChecked) {
+            localNoticeChecked = true
+            val notes = ReleaseNotesCatalog.forVersion(currentVersionCode)
+            if (ReleaseNoticePolicy.shouldShowLocal(
+                    currentVersionCode = currentVersionCode,
+                    lastShownVersionCode = releaseNoticeStore.lastShownReleaseNotesVersionCode,
+                    notes = notes,
+                )
+            ) {
+                releaseNotesNotice = notes
+                return@LaunchedEffect
+            }
+        }
+        checkRemoteUpdate()
+    }
 
     DisposableEffect(lifecycleOwner, writingEditorState.visible) {
         val observer = LifecycleEventObserver { _, event ->
@@ -287,7 +356,7 @@ fun AppRoot() {
         contract = ActivityResultContracts.PickVisualMedia(),
     ) { uri ->
         if (uri != null) {
-            scope.launch { writingEditorViewModel.importImage(uri.toString()) }
+            writingEditorViewModel.prepareImageCrop(uri.toString())
         }
     }
     val profileAvatarPicker = rememberLauncherForActivityResult(
@@ -780,6 +849,8 @@ fun AppRoot() {
                                     onDeleteImage = writingEditorViewModel::deleteImage,
                                     onConsumeInsertedImageFocus =
                                         writingEditorViewModel::consumeInsertedImageFocus,
+                                    onCancelImageCrop = writingEditorViewModel::cancelImageCrop,
+                                    onConfirmImageCrop = writingEditorViewModel::confirmImageCrop,
                                     onAddPunctuation = writingEditorViewModel::addPunctuation,
                                     onRemovePunctuation = writingEditorViewModel::removePunctuation,
                                     onMovePunctuation = writingEditorViewModel::movePunctuation,
@@ -964,6 +1035,68 @@ fun AppRoot() {
                         pendingRestoreUri = null
                     },
                 ) { Text("取消") }
+            },
+        )
+    }
+
+    releaseNotesNotice?.let { notes ->
+        AlertDialog(
+            onDismissRequest = {
+                releaseNoticeStore.markReleaseNotesShown(notes.versionCode)
+                releaseNotesNotice = null
+                checkRemoteUpdate()
+            },
+            title = { Text("更新内容 ${notes.versionName}") },
+            text = {
+                Column {
+                    notes.items.forEach { item ->
+                        Text("• $item")
+                    }
+                    Text("本次更新说明已按实际完成的功能整理。")
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        releaseNoticeStore.markReleaseNotesShown(notes.versionCode)
+                        releaseNotesNotice = null
+                        checkRemoteUpdate()
+                    },
+                ) { Text("知道了") }
+            },
+        )
+    }
+
+    availableUpdateNotice?.let { update ->
+        val dismissUpdate = {
+            releaseNoticeStore.markAvailableVersionNotified(update.latestVersionCode)
+            availableUpdateNotice = null
+        }
+        AlertDialog(
+            onDismissRequest = dismissUpdate,
+            title = { Text("发现新版本 ${update.latestVersion}") },
+            text = {
+                Column {
+                    Text("当前版本：${update.currentVersion}（versionCode ${update.currentVersionCode}）")
+                    Text("最新版本：${update.latestVersion}（versionCode ${update.latestVersionCode}）")
+                    update.releaseNotes?.take(700)?.let { notes ->
+                        Text(notes)
+                    }
+                    Text("打开下载页后，APK 下载和安装由浏览器及 Android 系统确认，不会静默安装。")
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        dismissUpdate()
+                        if (!ExternalLinkLauncher.open(context, update.apkUrl)) {
+                            showMessage("无法打开下载链接，请访问 GitHub Release 页面")
+                        }
+                    },
+                ) { Text("查看更新") }
+            },
+            dismissButton = {
+                TextButton(onClick = dismissUpdate) { Text("关闭") }
             },
         )
     }

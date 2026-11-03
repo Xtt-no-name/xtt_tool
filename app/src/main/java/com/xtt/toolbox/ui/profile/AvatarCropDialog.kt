@@ -49,6 +49,9 @@ fun AvatarCropDialog(
     busy: Boolean,
     onCancel: () -> Unit,
     onConfirm: (zoom: Float, offsetX: Float, offsetY: Float, viewportPx: Float) -> Unit,
+    title: String = "调整头像",
+    confirmLabel: String = "使用此头像",
+    description: String = "双指缩放，拖动调整位置；方框内区域会成为头像。",
 ) {
     var zoom by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
@@ -75,7 +78,7 @@ fun AvatarCropDialog(
                         Text("取消")
                     }
                     Text(
-                        text = "调整头像",
+                        text = title,
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.titleLarge,
                     )
@@ -88,7 +91,7 @@ fun AvatarCropDialog(
                     verticalArrangement = Arrangement.Center,
                 ) {
                     Text(
-                        text = "双指缩放，拖动调整位置；方框内区域会成为头像。",
+                        text = description,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -165,7 +168,7 @@ fun AvatarCropDialog(
                                 }
                             },
                             enabled = !busy && viewportPx > 0f,
-                        ) { Text(if (busy) "保存中…" else "使用此头像") }
+                        ) { Text(if (busy) "保存中…" else confirmLabel) }
                     }
                 }
             }

@@ -69,6 +69,17 @@ fun ProfileScreen(
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
         }.getOrNull() ?: "未知"
     }
+    val versionCode = remember {
+        runCatching {
+            val info = context.packageManager.getPackageInfo(context.packageName, 0)
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                info.longVersionCode.toInt()
+            } else {
+                @Suppress("DEPRECATION")
+                info.versionCode
+            }
+        }.getOrDefault(0)
+    }
     var selectedHeatmapDate by remember { mutableStateOf<String?>(null) }
     var editingNickname by remember { mutableStateOf(false) }
     var nicknameDraft by remember { mutableStateOf(profileState.nickname) }
@@ -290,6 +301,7 @@ fun ProfileScreen(
     if (showUpdateCheck) {
         UpdateCheckDialog(
             currentVersion = versionName,
+            currentVersionCode = versionCode,
             onDismiss = { showUpdateCheck = false },
         )
     }
@@ -298,6 +310,7 @@ fun ProfileScreen(
 @Composable
 private fun UpdateCheckDialog(
     currentVersion: String,
+    currentVersionCode: Int,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -309,7 +322,7 @@ private fun UpdateCheckDialog(
         result = null
         linkError = null
         result = withContext(Dispatchers.IO) {
-            UpdateChecker.check(currentVersion)
+            UpdateChecker.check(currentVersion, currentVersionCode)
         }
     }
 

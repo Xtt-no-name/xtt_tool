@@ -21,6 +21,8 @@ data class WritingEditorCallbacks(
     val onInsertPunctuation: (String) -> Unit,
     val onDeleteImage: (String) -> Unit,
     val onConsumeInsertedImageFocus: () -> Unit,
+    val onCancelImageCrop: () -> Unit,
+    val onConfirmImageCrop: (Float, Float, Float, Float) -> Unit,
     val onAddPunctuation: (String) -> Unit,
     val onRemovePunctuation: (Int) -> Unit,
     val onMovePunctuation: (Int, Int) -> Unit,
