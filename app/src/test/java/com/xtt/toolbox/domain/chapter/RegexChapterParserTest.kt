@@ -187,4 +187,78 @@ class RegexChapterParserTest {
         val text = "他说第一章的内容还没有写完，也没有独立的章节标题。"
         assertTrue(parser.parse(text).candidates.isEmpty())
     }
+
+    @Test
+    fun recognizesBodyMarkerAndBookTitlePrefixesFromRealNovels() {
+        val text = """
+            正文 第一章 冰雪祭祀的追杀(上)
+            正文内容一
+            正文 第一章 冰雪祭祀的追杀(中)
+            正文内容二
+            【某书】第二回：回目
+            回目正文
+            【某书】第二回：回目
+            回目正文二
+        """.trimIndent()
+
+        val chapters = parser.parse(text).candidates
+        assertEquals(3, chapters.size)
+        assertEquals("第一章 冰雪祭祀的追杀(上)", chapters[0].title)
+        assertEquals("第一章 冰雪祭祀的追杀(中)", chapters[1].title)
+        assertEquals("第二回：回目", chapters[2].title)
+    }
+
+    @Test
+    fun supportsNoSpaceChapterTitlesAndRealTitleWords() {
+        val text = """
+            第一章是寒是暖
+            正文一
+            第二章求不得放不下
+            正文二
+            第三章来了来了
+            正文三
+        """.trimIndent()
+
+        val chapters = parser.parse(text).candidates
+        assertEquals(
+            listOf("第一章是寒是暖", "第二章求不得放不下", "第三章来了来了"),
+            chapters.map { it.title },
+        )
+    }
+
+    @Test
+    fun keepsRealSubsectionsWithSameNumber() {
+        val text = """
+            第一章 标题（上）
+            正文上
+            第一章 标题（中）
+            正文中
+            第一章 标题（下）
+            正文下
+        """.trimIndent()
+
+        val chapters = parser.parse(text).candidates
+        assertEquals(3, chapters.size)
+        assertEquals(3, chapters.map { it.title }.distinct().size)
+    }
+
+    @Test
+    fun realNovelFormatsPreserveAllBodyOffsets() {
+        val text = "前言目录\n正文 第一章 开始\n正文一\n【书名】第二回：继续却说正文二"
+        val chapters = parser.parse(text).candidates
+        assertEquals(2, chapters.size)
+        assertEquals(text.length, chapters.last().endOffset)
+        chapters.zipWithNext().forEach { (left, right) ->
+            assertEquals(left.endOffset, right.startOffset)
+        }
+        assertTrue(text.substring(chapters[0].startOffset, chapters[0].endOffset).contains("正文一"))
+    }
+
+    @Test
+    fun supportsExplicitUnnumberedBodyHeading() {
+        val text = "正文 特别短篇\n正文内容"
+        val chapters = parser.parse(text).candidates
+        assertEquals(1, chapters.size)
+        assertEquals("正文 特别短篇", chapters.single().title)
+    }
 }

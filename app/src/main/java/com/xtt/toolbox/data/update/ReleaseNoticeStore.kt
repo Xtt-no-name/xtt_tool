@@ -11,6 +11,17 @@ data class ReleaseNotes(
 
 object ReleaseNotesCatalog {
     fun forVersion(versionCode: Int): ReleaseNotes? = when (versionCode) {
+        5 -> ReleaseNotes(
+            versionCode = 5,
+            versionName = "1.0.4",
+            title = "本次更新内容",
+            items = listOf(
+                "写作图片裁剪改为独立的源图裁剪：支持原图、1:1、4:3、3:4、16:9、9:16 和自由比例。",
+                "图片裁剪会应用 EXIF 方向，并从源图重新取样；预览缩放不再降低最终裁剪精度。",
+                "TXT 章节解析支持正文/书名前缀、无空格标题、目录式重复标题和真实小说分节。",
+                "已用三本本地真实小说验证章节恢复和正文边界；真实手机仍建议自行确认排版效果。",
+            ),
+        )
         4 -> ReleaseNotes(
             versionCode = 4,
             versionName = "1.0.3",

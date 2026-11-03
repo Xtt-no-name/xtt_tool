@@ -53,12 +53,28 @@ data class ChapterCandidate(
 }
 
 /**
+ * 解析诊断信息，不属于持久化模型；导入预览、测试和调试可读取。
+ */
+data class ChapterParseDiagnostics(
+    val candidateCount: Int = 0,
+    val acceptedCount: Int = 0,
+    val rejectedCount: Int = 0,
+    val lowConfidenceCount: Int = 0,
+    val tocDroppedCount: Int = 0,
+    val duplicateDroppedCount: Int = 0,
+    val emptyChapterCount: Int = 0,
+    val shortChapterCount: Int = 0,
+    val durationMs: Long = 0,
+)
+
+/**
  * [candidates] 为空表示没有识别到章节，调用方应使用连续阅读，而不是拒绝导入。
  * [warnings] 用于记录可疑标题或解析告警，不影响连续阅读。
  */
 data class ChapterParseResult(
     val candidates: List<ChapterCandidate>,
     val warnings: List<String> = emptyList(),
+    val diagnostics: ChapterParseDiagnostics? = null,
 ) {
     val hasChapters: Boolean
         get() = candidates.isNotEmpty()

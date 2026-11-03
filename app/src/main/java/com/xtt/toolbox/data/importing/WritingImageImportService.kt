@@ -4,12 +4,17 @@ import android.content.ContentResolver
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Rect
 import android.media.ExifInterface
 import android.net.Uri
 import com.xtt.toolbox.domain.content.BookResource
 import com.xtt.toolbox.domain.content.BookResourceKind
 import com.xtt.toolbox.domain.content.ImageFormatDetector
+import com.xtt.toolbox.domain.writing.WritingImageCropGeometry
+import com.xtt.toolbox.domain.writing.WritingImageCropRect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
@@ -24,6 +29,23 @@ data class ImportedWritingImage(
     val bytes: ByteArray,
     val stagingFile: File,
 )
+
+/**
+ * 写作图片裁剪的原始/预览分离数据：
+ * - source：最多 4096px 的已纠正方向源图，最终裁剪只读取它；
+ * - preview：最多 1600px 的显示副本，不参与最终像素计算。
+ */
+data class WritingImageCropSource(
+    val source: Bitmap,
+    val preview: Bitmap,
+    val sourceWidth: Int,
+    val sourceHeight: Int,
+) {
+    fun recycle() {
+        if (!source.isRecycled) source.recycle()
+        if (preview !== source && !preview.isRecycled) preview.recycle()
+    }
+}
 
 /**
  * 将系统相册选择结果复制到应用私有文件的临时资源区。
@@ -108,6 +130,100 @@ class WritingImageImportService(
 
     fun discard(image: ImportedWritingImage) {
         runCatching { image.stagingFile.delete() }
+    }
+
+    /**
+     * 加载编辑图片裁剪源。preview 仅用于显示，source 用于最终像素映射；
+     * 两者必须在取消/确认后统一回收。
+     */
+    suspend fun loadCropSource(uri: String): Result<WritingImageCropSource> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val bytes = readBytes(uri)
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                    throw IOException("图片无法解码")
+                }
+                var sample = 1
+                while (bounds.outWidth / sample > MAX_SOURCE_EDGE ||
+                    bounds.outHeight / sample > MAX_SOURCE_EDGE
+                ) {
+                    sample *= 2
+                }
+                val decoded = BitmapFactory.decodeByteArray(
+                    bytes,
+                    0,
+                    bytes.size,
+                    BitmapFactory.Options().apply {
+                        inSampleSize = sample
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                    },
+                ) ?: throw IOException("图片无法解码")
+                val orientation = runCatching {
+                    ExifInterface(ByteArrayInputStream(bytes)).getAttributeInt(
+                        ExifInterface.TAG_ORIENTATION,
+                        ExifInterface.ORIENTATION_NORMAL,
+                    )
+                }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+                val source = applyOrientation(decoded, orientation)
+                val preview = makePreview(source)
+                WritingImageCropSource(
+                    source = source,
+                    preview = preview,
+                    sourceWidth = source.width,
+                    sourceHeight = source.height,
+                )
+            }
+        }
+
+    /** 从源图按裁剪框生成最终图片字节；preview 从不参与该函数。 */
+    fun cropToJpegBytes(
+        source: WritingImageCropSource,
+        rect: WritingImageCropRect,
+        maxOutputEdge: Int = MAX_CROP_OUTPUT_EDGE,
+    ): ByteArray {
+        val clamped = WritingImageCropGeometry.clamp(
+            rect,
+            source.sourceWidth,
+            source.sourceHeight,
+        )
+        if (clamped.width <= 0 || clamped.height <= 0) {
+            throw IOException("裁剪区域无效")
+        }
+        val scale = minOf(
+            1f,
+            maxOutputEdge.toFloat() / maxOf(clamped.width, clamped.height),
+        )
+        val outputWidth = (clamped.width * scale).toInt().coerceAtLeast(1)
+        val outputHeight = (clamped.height * scale).toInt().coerceAtLeast(1)
+        val output = Bitmap.createBitmap(outputWidth, outputHeight, Bitmap.Config.ARGB_8888)
+        try {
+            val canvas = Canvas(output)
+            canvas.drawBitmap(
+                source.source,
+                Rect(clamped.left, clamped.top, clamped.right, clamped.bottom),
+                Rect(0, 0, outputWidth, outputHeight),
+                Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG),
+            )
+            return java.io.ByteArrayOutputStream().use { stream ->
+                if (!output.compress(Bitmap.CompressFormat.JPEG, 92, stream)) {
+                    throw IOException("图片编码失败")
+                }
+                stream.toByteArray()
+            }
+        } finally {
+            if (!output.isRecycled) output.recycle()
+        }
+    }
+
+    private fun makePreview(source: Bitmap): Bitmap {
+        val maxEdge = maxOf(source.width, source.height)
+        if (maxEdge <= PREVIEW_EDGE) return source
+        val scale = PREVIEW_EDGE.toFloat() / maxEdge
+        val width = (source.width * scale).toInt().coerceAtLeast(1)
+        val height = (source.height * scale).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(source, width, height, true)
     }
 
     /**
@@ -254,5 +370,8 @@ class WritingImageImportService(
     private companion object {
         const val MAX_IMAGE_BYTES = 32 * 1024 * 1024
         const val MAX_EDITABLE_EDGE = 1600
+        const val MAX_SOURCE_EDGE = 4096
+        const val PREVIEW_EDGE = 1600
+        const val MAX_CROP_OUTPUT_EDGE = 2048
     }
 }

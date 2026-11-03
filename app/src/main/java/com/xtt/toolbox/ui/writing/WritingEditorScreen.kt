@@ -106,7 +106,6 @@ import com.xtt.toolbox.ui.components.SmartFormatIcon
 import com.xtt.toolbox.ui.components.TextLinesIcon
 import com.xtt.toolbox.ui.components.ToolboxIcon
 import com.xtt.toolbox.ui.components.UndoIcon
-import com.xtt.toolbox.ui.profile.AvatarCropDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -547,15 +546,12 @@ fun WritingEditorScreen(
             )
         }
 
-        state.imageCropBitmap?.let { bitmap ->
-            AvatarCropDialog(
-                bitmap = bitmap,
+        state.imageCropSource?.let { source ->
+            WritingImageCropDialog(
+                source = source,
                 busy = state.imageCropBusy,
                 onCancel = onCancelImageCrop,
                 onConfirm = onConfirmImageCrop,
-                title = "裁剪图片",
-                confirmLabel = "使用此图片",
-                description = "双指缩放，拖动调整位置；方框内区域会成为图片。",
             )
         }
     }

@@ -1,5 +1,7 @@
 package com.xtt.toolbox.ui.writing
 
+import com.xtt.toolbox.domain.writing.WritingImageCropRect
+
 /**
  * 编辑器回调集合。
  *
@@ -22,7 +24,7 @@ data class WritingEditorCallbacks(
     val onDeleteImage: (String) -> Unit,
     val onConsumeInsertedImageFocus: () -> Unit,
     val onCancelImageCrop: () -> Unit,
-    val onConfirmImageCrop: (Float, Float, Float, Float) -> Unit,
+    val onConfirmImageCrop: (WritingImageCropRect) -> Unit,
     val onAddPunctuation: (String) -> Unit,
     val onRemovePunctuation: (Int) -> Unit,
     val onMovePunctuation: (Int, Int) -> Unit,

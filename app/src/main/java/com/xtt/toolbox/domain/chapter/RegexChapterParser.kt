@@ -3,14 +3,22 @@ package com.xtt.toolbox.domain.chapter
 import com.xtt.toolbox.data.model.ChapterDetectionSource
 
 /**
- * TXT 章节解析器：先提取候选标题，再做目录区过滤和编号结构校验，最后按原文偏移切分。
+ * TXT 章节解析器。
  *
- * 设计参考（只借鉴算法思想，不复制代码）：
- * - Qingdu Reader 的 ChapterTitleMatcher / TxtChapterSplitter（Apache-2.0）：
- *   候选结构校验、目录区过滤、编号序列对齐、卷标题与诊断报告；
- * - novel-chapter-splitter（MIT）：候选匹配与干扰行过滤比较简单，未采用其顺序切分。
+ * 不是逐行“匹配到第X章就切”的简单正则器，而是：
+ * 1. 逐行扫描并保留 UTF-16 原文偏移；
+ * 2. 识别行首、书名前缀、正文标记或库标记后的候选标题；
+ * 3. 对候选做结构评分，拒绝正文语句、广告和低质量候选；
+ * 4. 合并相邻的“标题行 + 标题正文粘连行”；
+ * 5. 识别开头目录和重复标题；
+ * 6. 基于全文编号做诊断，最后才确定边界。
  *
- * 本类不会修改正文，也不会丢弃候选之外的正文；输出偏移始终指向原始规范化文本。
+ * 设计参考（只借鉴算法思想，未复制代码）：
+ * - Qingdu Reader 的 ChapterTitleMatcher / TxtChapterSplitter（Apache-2.0）；
+ * - novel-chapter-splitter 的候选/干扰行思路（MIT）。
+ *
+ * 解析器绝不修改正文；[ChapterParseResult.candidates] 的 start/end 始终指向
+ * 规范化文本的原始位置。
  */
 class RegexChapterParser : ChapterParser {
     private enum class HeadingKind {
@@ -18,6 +26,8 @@ class RegexChapterParser : ChapterParser {
         VOLUME,
         SPECIAL,
     }
+
+    private data class Line(val start: Int, val text: String)
 
     private data class Heading(
         val lineIndex: Int,
@@ -27,225 +37,511 @@ class RegexChapterParser : ChapterParser {
         val kind: HeadingKind,
         val number: Int?,
         val confidence: Float,
+        val prefix: String,
+        val truncatedTitle: Boolean,
+        val indented: Boolean,
     )
 
-    private data class PatternSpec(
-        val regex: Regex,
+    private data class Match(
+        val tokenStart: Int,
+        val tokenEnd: Int,
+        val number: Int?,
         val kind: HeadingKind,
-        val confidence: Float,
+        val prefix: String,
     )
 
-    private val patterns = listOf(
-        // 第 1 章、第 一 回、第12节：编号与单位之间允许 Unicode 空白。
-        PatternSpec(
-            Regex(
-                """^第[\s\u3000]*([0-9零〇一二三四五六七八九十百千万两]+)[\s\u3000]*([章节回集话])""" +
-                    """(?=$|[\s\u3000:：、.\-—])(.*)$""",
-            ),
-            HeadingKind.CHAPTER,
-            0.95f,
-        ),
-        // 第 1 卷 / 第 一 部 / 第 2 篇
-        PatternSpec(
-            Regex(
-                """^第[\s\u3000]*([0-9零〇一二三四五六七八九十百千万两]+)[\s\u3000]*([卷部篇册])""" +
-                    """(?=$|[\s\u3000:：、.\-—])(.*)$""",
-            ),
-            HeadingKind.VOLUME,
-            0.90f,
-        ),
-        // 卷一 / 卷 1
-        PatternSpec(
-            Regex(
-                """^卷[\s\u3000]*([0-9零〇一二三四五六七八九十百千万两]+)""" +
-                    """(?=$|[\s\u3000:：、.\-—])(.*)$""",
-            ),
-            HeadingKind.VOLUME,
-            0.86f,
-        ),
-        PatternSpec(
-            Regex(
-                """^(序章|楔子|引子|前言|序言|尾声|终章|后记|番外)""" +
-                    """(?=$|[\s\u3000:：、.\-—])(.*)$""",
-            ),
-            HeadingKind.SPECIAL,
-            0.90f,
-        ),
-        PatternSpec(
-            Regex(
-                """^chapter[\s\u3000]+(\d+)(?=$|[\s\u3000:：、.\-—])(.*)$""",
-                RegexOption.IGNORE_CASE,
-            ),
-            HeadingKind.CHAPTER,
-            0.90f,
-        ),
-    )
+    private data class PrefixResult(val allowed: Boolean, val value: String)
 
     override fun parse(text: String): ChapterParseResult {
         if (text.isEmpty()) return ChapterParseResult(emptyList())
-
+        val started = System.nanoTime()
         val lines = scanLines(text)
-        if (lines.isEmpty()) return ChapterParseResult(emptyList())
+        val candidates = mutableListOf<Heading>()
+        var rejected = 0
+        var lowConfidence = 0
 
-        val headings = mutableListOf<Heading>()
         lines.forEachIndexed { lineIndex, line ->
-            val rawLine = line.text
-            val title = cleanLine(rawLine)
-            if (title.isEmpty() || title.length > MAX_LINE_LENGTH) return@forEachIndexed
-            if (looksLikeAdvertisement(title)) return@forEachIndexed
-
-            val matched = matchHeading(title) ?: return@forEachIndexed
-            val leadingWhitespace = rawLine.indexOfFirst { !it.isWhitespace() && it != '\uFEFF' }
-                .let { if (it == -1) 0 else it }
-            headings += Heading(
-                lineIndex = lineIndex,
-                lineStart = line.start,
-                headingOffset = line.start + leadingWhitespace,
-                title = title,
-                kind = matched.kind,
-                number = matched.number,
-                confidence = matched.confidence,
-            )
+            val heading = detectHeading(lineIndex, line)
+            if (heading != null) {
+                if (heading.confidence < MIN_CONFIDENCE) {
+                    rejected++
+                    lowConfidence++
+                } else {
+                    candidates += heading
+                }
+                return@forEachIndexed
+            }
+            if (line.text.isNotBlank()) {
+                // 统计候选被结构规则排除的行，便于诊断；不把普通正文当作候选。
+                val trimmed = cleanLine(line.text)
+                if (looksLikeHeadingToken(trimmed)) rejected++
+            }
         }
-        if (headings.isEmpty()) return ChapterParseResult(emptyList())
 
+        val merged = mergeAdjacentDuplicateHeadings(candidates)
         val warnings = mutableListOf<String>()
-        val afterToc = dropLeadingTableOfContents(headings, lines, warnings)
-        if (afterToc.isEmpty()) {
-            // 整个文件只有标题行时，仍保留这些行；不把它们误判成目录而全部丢弃。
-            return buildResult(text, headings, warnings)
-        }
-        addSequenceWarnings(afterToc, warnings)
-        addPrefixWarning(text, afterToc.first(), warnings)
-        return buildResult(text, afterToc, warnings)
-    }
+        val afterToc = dropRepeatedTocHeadings(merged, lines, warnings)
+        val accepted = afterToc
+        addSequenceWarnings(accepted, warnings)
+        addPrefixWarning(text, accepted.firstOrNull(), warnings)
 
-    private fun buildResult(
-        text: String,
-        headings: List<Heading>,
-        warnings: MutableList<String>,
-    ): ChapterParseResult {
-        val candidates = headings.mapIndexed { index, heading ->
+        val chapterCandidates = accepted.mapIndexed { index, heading ->
+            val end = accepted.getOrNull(index + 1)?.lineStart ?: text.length
             ChapterCandidate(
-                title = heading.title,
+                title = heading.title.ifBlank { cleanLine(lines[heading.lineIndex].text) },
                 order = index,
                 startOffset = heading.lineStart,
-                endOffset = headings.getOrNull(index + 1)?.lineStart ?: text.length,
+                endOffset = end,
                 headingOffset = heading.headingOffset,
                 detectionSource = ChapterDetectionSource.REGEX,
                 confidence = heading.confidence,
                 level = if (heading.kind == HeadingKind.VOLUME) 1 else 0,
             )
         }
-        return ChapterParseResult(candidates = candidates, warnings = warnings)
+        val diagnostics = ChapterParseDiagnostics(
+            candidateCount = candidates.size,
+            acceptedCount = chapterCandidates.size,
+            rejectedCount = rejected,
+            lowConfidenceCount = lowConfidence,
+            tocDroppedCount = (merged.size - afterToc.size).coerceAtLeast(0),
+            duplicateDroppedCount = (candidates.size - merged.size).coerceAtLeast(0),
+            emptyChapterCount = chapterCandidates.count { chapter ->
+                text.substring(chapter.startOffset, chapter.endOffset)
+                    .substring((chapter.headingOffset - chapter.startOffset).coerceIn(0, chapter.endOffset - chapter.startOffset))
+                    .isBlank()
+            },
+            shortChapterCount = chapterCandidates.count { chapter ->
+                text.substring(chapter.startOffset, chapter.endOffset).length < 50
+            },
+            durationMs = (System.nanoTime() - started) / 1_000_000L,
+        )
+        return ChapterParseResult(chapterCandidates, warnings, diagnostics)
     }
 
-    private data class MatchedHeading(
-        val kind: HeadingKind,
-        val number: Int?,
-        val confidence: Float,
-    )
+    private fun detectHeading(lineIndex: Int, line: Line): Heading? {
+        val raw = line.text
+        val trimmed = raw.trimStart()
+        if (trimmed.isBlank()) return null
+        val leading = raw.length - trimmed.length
+        val remark = detectSpecial(trimmed)
+        if (remark != null) {
+            val prefix = prefixOf(trimmed, remark.tokenStart)
+            if (!prefix.allowed) return null
+            return Heading(
+                lineIndex = lineIndex,
+                lineStart = line.start,
+                headingOffset = line.start + leading + remark.tokenStart,
+                title = cleanTitle(trimmed.substring(remark.tokenStart)),
+                kind = HeadingKind.SPECIAL,
+                number = null,
+                confidence = 0.78f,
+                prefix = prefix.value,
+                truncatedTitle = false,
+                indented = leading > 0,
+            )
+        }
 
-    private fun matchHeading(title: String): MatchedHeading? {
-        patterns.forEach { pattern ->
-            val match = pattern.regex.matchEntire(title) ?: return@forEach
-            val number = match.groupValues.getOrNull(1)?.let(::parseNumber)
-            val rest = match.groupValues.getOrNull(2).orEmpty()
-            if (rest.trimStart().firstOrNull()?.let { it == '是' || it == '的' } == true) {
-                return null
+        val match = findNumberedToken(trimmed)
+        if (match == null) {
+            val unnumbered = detectUnnumberedHeading(trimmed, lineIndex, line)
+            return unnumbered
+        }
+        val prefix = prefixOf(trimmed, match.tokenStart)
+        if (!prefix.allowed) return null
+
+        val rawAfterToken = trimmed.substring(match.tokenEnd)
+        val hasSeparator = rawAfterToken.firstOrNull()?.let {
+            it.isWhitespace() || it in SEPARATORS
+        } == true
+        val rest = rawAfterToken.trimStart { it.isWhitespace() || it in SEPARATORS }
+        if (!hasSeparator && rest.startsWith('是') && rest.length < 2) {
+            return null
+        }
+        if (looksLikeAnnouncement(rest)) return null
+        val extracted = extractTitle(rest, trimmed)
+        // 书名/卷名括号里如果直接包含“第X回”，括号本身属于标题边界。
+        val bracketClose = if (trimmed.startsWith("【") && match.tokenStart > 0) {
+            trimmed.indexOf('】', match.tokenEnd)
+        } else {
+            -1
+        }
+        val bracketTitle = bracketClose
+            .takeIf { it > match.tokenEnd }
+            ?.let { trimmed.substring(match.tokenStart, it).trim() }
+        val fullTitle = cleanTitle(trimmed.substring(match.tokenStart))
+        val hasVisibleBody = bracketTitle == null && extracted.title.length < rest.length - 2
+        val titleResult = when {
+            bracketTitle != null -> TitleResult(bracketTitle, false)
+            hasVisibleBody -> extracted
+            else -> TitleResult(fullTitle, fullTitle.length > MAX_TITLE_LENGTH)
+        }
+        val title = if (titleResult.title.length > MAX_TITLE_LENGTH) {
+            titleResult.title.take(MAX_TITLE_LENGTH).trimEnd()
+        } else {
+            titleResult.title
+        }
+        val confidence = confidenceOf(
+            prefix = prefix.value,
+            title = title,
+            lineLength = trimmed.length,
+            truncated = titleResult.truncated,
+        )
+        return Heading(
+            lineIndex = lineIndex,
+            lineStart = line.start,
+            headingOffset = line.start + leading + match.tokenStart,
+            title = title,
+            kind = match.kind,
+            number = match.number,
+            confidence = confidence,
+            prefix = prefix.value,
+            truncatedTitle = titleResult.truncated,
+            indented = leading > 0,
+        )
+    }
+
+    private fun findNumberedToken(line: String): Match? {
+        NUMBERED_TOKEN.findAll(line).forEach { match ->
+            val tokenStart = match.range.first
+            val unit = match.groupValues[2]
+            val number = match.groupValues[1].let(::parseNumber)
+            val kind = when (unit) {
+                "卷", "部", "篇", "册" -> HeadingKind.VOLUME
+                else -> HeadingKind.CHAPTER
             }
-            return MatchedHeading(pattern.kind, number, pattern.confidence)
+            val prefix = prefixOf(line, tokenStart)
+            if (!prefix.allowed) return@forEach
+            return Match(
+                tokenStart = tokenStart,
+                tokenEnd = match.range.last + 1,
+                number = number,
+                kind = kind,
+                prefix = prefix.value,
+            )
+        }
+        // 卷X 形式
+        val volume = VOLUME_TOKEN.find(line)
+        if (volume != null) {
+            val prefix = prefixOf(line, volume.range.first)
+            if (prefix.allowed) {
+                return Match(
+                    tokenStart = volume.range.first,
+                    tokenEnd = volume.range.last + 1,
+                    number = parseNumber(volume.groupValues[1]),
+                    kind = HeadingKind.VOLUME,
+                    prefix = prefix.value,
+                )
+            }
+        }
+        // Chapter 1 形式
+        val english = ENGLISH_TOKEN.find(line)
+        if (english != null) {
+            val prefix = prefixOf(line, english.range.first)
+            if (prefix.allowed) {
+                return Match(
+                    tokenStart = english.range.first,
+                    tokenEnd = english.range.last + 1,
+                    number = english.groupValues[1].toIntOrNull(),
+                    kind = HeadingKind.CHAPTER,
+                    prefix = prefix.value,
+                )
+            }
         }
         return null
     }
 
-    private fun dropLeadingTableOfContents(
+    private fun detectSpecial(line: String): Match? {
+        val match = SPECIAL_TOKEN.find(line) ?: return null
+        val prefix = prefixOf(line, match.range.first)
+        if (!prefix.allowed) return null
+        return Match(
+            tokenStart = match.range.first,
+            tokenEnd = match.range.last + 1,
+            number = null,
+            kind = HeadingKind.SPECIAL,
+            prefix = prefix.value,
+        )
+    }
+
+    /**
+     * 有明确“正文/VIP”前缀、但无编号的短标题。没有前缀的普通短句不猜测，
+     * 因为这类文本与正文无法仅靠单行可靠区分。
+     */
+    private fun detectUnnumberedHeading(line: String, lineIndex: Int, lineValue: Line): Heading? {
+        val match = UNNUMBERED_HEADING.matchEntire(line) ?: return null
+        val title = match.groupValues[2].trim()
+        if (title.length !in 2..40) return null
+        if (title.any { it == '。' || it == '！' || it == '？' || it == '；' }) return null
+        if (title.any { it.isDigit() } || title.contains('第')) return null
+        if (looksLikeAnnouncement(title)) return null
+        val leading = line.length - line.trimStart().length
+        return Heading(
+            lineIndex = lineIndex,
+            lineStart = lineValue.start,
+            headingOffset = lineValue.start + leading + match.range.first,
+            title = "正文 $title",
+            kind = HeadingKind.CHAPTER,
+            number = null,
+            confidence = 0.58f,
+            prefix = match.groupValues[1],
+            truncatedTitle = false,
+            indented = leading > 0,
+        )
+    }
+
+    private fun prefixOf(line: String, tokenStart: Int): PrefixResult {
+        val before = line.substring(0, tokenStart).trim()
+        if (before.isEmpty()) return PrefixResult(true, "")
+        if (before.all { it.isWhitespace() || it in PREFIX_PUNCTUATION }) {
+            return PrefixResult(true, before)
+        }
+        val deBracketed = before
+            .replace(Regex("""^【[^】]{0,80}】\s*"""), "")
+            .replace(Regex("""^\[[^\]]{0,80}\]\s*"""), "")
+            .replace(Regex("""^《[^》]{0,80}》\s*"""), "")
+            .trim()
+        if (deBracketed.isEmpty()) return PrefixResult(true, before)
+        if (KNOWN_PREFIX_PATTERN.containsMatchIn(before)) return PrefixResult(true, before)
+        if (before.length <= 4 && before.all { it.isWhitespace() || it in PREFIX_PUNCTUATION }) {
+            return PrefixResult(true, before)
+        }
+        return PrefixResult(false, before)
+    }
+
+    private data class TitleResult(val title: String, val truncated: Boolean)
+
+    private fun extractTitle(rest: String, line: String): TitleResult {
+        var title = rest.trim { it.isWhitespace() || it in SEPARATORS }
+        if (title.isEmpty()) return TitleResult("", false)
+        var truncated = false
+
+        // 标题与正文粘连时，取第一个明显的句子结束符/叙事起点之前的部分。
+        val sentence = title.indexOfFirst { it == '。' || it == '！' || it == '？' || it == '；' }
+        if (sentence >= 2 && line.length > 80) {
+            title = title.substring(0, sentence).trimEnd()
+        } else {
+            val bodyMarker = BODY_MARKERS
+                .map { marker -> title.indexOf(marker) }
+                .filter { it in 2..120 }
+                .minOrNull()
+            if (bodyMarker != null && line.length > 80) {
+                title = title.substring(0, bodyMarker).trimEnd()
+            }
+        }
+        if (title.length > MAX_TITLE_LENGTH) {
+            title = title.take(MAX_TITLE_LENGTH).trimEnd()
+            truncated = true
+        }
+        title = title.trim { it.isWhitespace() || it in SEPARATORS }
+        return TitleResult(title, truncated)
+    }
+
+    private fun confidenceOf(
+        prefix: String,
+        title: String,
+        lineLength: Int,
+        truncated: Boolean,
+    ): Float {
+        var score = 0.86f
+        if (prefix.isEmpty()) score += 0.05f
+        if (prefix.isNotEmpty() && KNOWN_PREFIX_PATTERN.containsMatchIn(prefix)) score += 0.01f
+        if (title.length in 1..60) score += 0.04f
+        if (title.length > 120) score -= 0.08f
+        if (lineLength > 300) score -= 0.04f
+        if (truncated) score -= 0.03f
+        if (looksLikeAnnouncement(title)) score -= 0.35f
+        return score.coerceIn(0f, 1f)
+    }
+
+    private fun mergeAdjacentDuplicateHeadings(headings: List<Heading>): List<Heading> {
+        if (headings.isEmpty()) return headings
+        val result = mutableListOf<Heading>()
+        headings.sortedBy { it.lineIndex }.forEach { current ->
+            val previous = result.lastOrNull()
+            if (previous != null && current.lineIndex - previous.lineIndex <= 3 &&
+                normalizeTitle(previous.title) == normalizeTitle(current.title) &&
+                previous.indented != current.indented
+            ) {
+                return@forEach
+            }
+            if (previous != null && sameChapter(previous, current)) {
+                return@forEach
+            }
+            if (previous != null && current.lineIndex - previous.lineIndex <= 3 &&
+                adjacentMarkerDuplicate(previous, current)
+            ) {
+                return@forEach
+            }
+            result += current
+        }
+        return result
+    }
+
+    /** 只有“第X回”标记和下一行同一回目时合并，不能合并“上/中/下”等真实同号分节。 */
+    private fun adjacentMarkerDuplicate(left: Heading, right: Heading): Boolean {
+        if (left.number == null || left.number != right.number) return false
+        if (left.kind != right.kind) return false
+        val a = normalizeTitle(left.title)
+        val b = normalizeTitle(right.title)
+        if (a == b) return false
+        val aMarker = isMarkerOnly(a)
+        val bMarker = isMarkerOnly(b)
+        if (aMarker || bMarker) return true
+        return (a.contains("彩蛋") || b.contains("彩蛋"))
+    }
+
+    private fun isMarkerOnly(value: String): Boolean =
+        value.matches(Regex("""^第[0-9零〇一二三四五六七八九十百千万两]+[章节回集话]$"""))
+
+    private fun isSubsection(left: Heading, right: Heading): Boolean {
+        if (left.number == null || left.number != right.number) return false
+        if (left.kind != right.kind) return false
+        val suffix = Regex("""[（(](上|中|下|上篇|中篇|下篇|[一二三四五六七八九十]+)[)）]$""")
+        val a = coreTitle(left.title).replace(suffix, "").trim()
+        val b = coreTitle(right.title).replace(suffix, "").trim()
+        return a == b
+    }
+
+    private fun sameChapter(left: Heading, right: Heading): Boolean {
+        if (left.kind != right.kind) return false
+        if (left.number != null && right.number != null && left.number != right.number) return false
+        if (normalizeTitle(left.title).isNotEmpty() &&
+            normalizeTitle(left.title) == normalizeTitle(right.title)
+        ) {
+            return false
+        }
+        // “第二回”标题页后面可能隔几十行才出现正文行；只对纯回目标题做远距离合并，
+        // 避免把“第一章（上）/（中）”这种真实分节合并。
+        if (left.number != null && left.number == right.number &&
+            (isMarkerOnly(normalizeTitle(left.title)) || isMarkerOnly(normalizeTitle(right.title)) ||
+                left.title.contains("内含") || right.title.contains("内含") ||
+                left.title.contains("彩蛋") || right.title.contains("彩蛋"))
+        ) {
+            return true
+        }
+        val a = coreTitle(left.title)
+        val b = coreTitle(right.title)
+        if (a.isNotEmpty() && b.isNotEmpty()) {
+            // 完全相同的独立标题可能是作者刻意保留的正文/章节歧义，不能强行合并。
+            if (a == b) return false
+            if (b.startsWith(a) || a.startsWith(b)) return true
+            return false
+        }
+        return a.isEmpty() && b.isEmpty() && left.number != null && right.number == left.number
+    }
+
+    private fun coreTitle(value: String): String =
+        normalizeTitle(value).replaceFirst(
+            Regex("""^第[0-9零〇一二三四五六七八九十百千万两]+[章节回集话]"""),
+            "",
+        )
+
+    private fun dropRepeatedTocHeadings(
         headings: List<Heading>,
         lines: List<Line>,
         warnings: MutableList<String>,
     ): List<Heading> {
-        if (headings.size < MIN_TOC_HEADINGS) return headings
-
-        // 目录区：连续标题之间没有非空正文行。正文短句测试不会满足该条件。
-        var end = 0
-        while (end + 1 < headings.size) {
-            val current = headings[end]
-            val next = headings[end + 1]
-            if (nonBlankLinesBetween(lines, current.lineIndex, next.lineIndex) > 0) break
-            end++
-        }
-        val tocSize = end + 1
-        if (tocSize < MIN_TOC_HEADINGS || tocSize >= headings.size) return headings
-
-        // 只有目录标题在正文中再次出现时才过滤，避免把“前四章都很短”误判成目录。
-        // 真实目录通常会在正文第一章处重复同一标题，这一条件比单纯看行距更安全。
-        val duplicateInside = (1 until tocSize).firstOrNull { index ->
-            headings.take(index).any { previous ->
-                normalizeTitle(previous.title) == normalizeTitle(headings[index].title)
+        if (headings.size < 3) return headings
+        val removed = mutableSetOf<Int>()
+        headings.forEachIndexed { index, heading ->
+            val next = headings.getOrNull(index + 1)
+            // 两个完全相同的紧邻标题可能是作者保留的正文/标题歧义，不能当目录删除。
+            if (next != null && next.lineIndex - heading.lineIndex <= 1 &&
+                normalizeTitle(next.title) == normalizeTitle(heading.title)
+            ) {
+                return@forEachIndexed
             }
-        }
-        val dropCount = if (duplicateInside != null) {
-            duplicateInside
-        } else {
-            val later = headings.drop(tocSize)
-            val firstRealChapter = later.indexOfFirst { candidate ->
-                headings.take(tocSize).any { toc ->
-                    normalizeTitle(toc.title) == normalizeTitle(candidate.title)
-                }
+            val bodyLines = nonBlankLinesBetween(
+                lines,
+                heading.lineIndex,
+                next?.lineIndex ?: lines.size,
+            )
+            if (bodyLines > 1) return@forEachIndexed
+            val laterDuplicate = headings.drop(index + 1).any { later ->
+                sameTocCandidate(heading, later) &&
+                    nonBlankLinesBetween(lines, later.lineIndex, lines.size) > 0
             }
-            if (firstRealChapter < 0) {
-                warnings += "开头存在疑似目录，但未找到重复标题，未自动过滤"
-                return headings
-            }
-            tocSize + firstRealChapter
+            if (laterDuplicate) removed += index
         }
-        if (dropCount <= 0 || dropCount >= headings.size) return headings
-        warnings += "开头目录区已过滤 $dropCount 个候选标题"
-        return headings.drop(dropCount)
+        if (removed.isEmpty()) return headings
+        warnings += "已排除 ${removed.size} 个疑似目录/重复标题"
+        return headings.filterIndexed { index, _ -> index !in removed }
     }
 
-    private fun normalizeTitle(value: String): String =
-        value.filterNot { it.isWhitespace() || it == '\uFEFF' }
+    private fun sameTocCandidate(left: Heading, right: Heading): Boolean =
+        sameChapter(left, right) ||
+            (normalizeTitle(left.title).isNotEmpty() &&
+                normalizeTitle(left.title) == normalizeTitle(right.title))
 
     private fun addSequenceWarnings(
         headings: List<Heading>,
         warnings: MutableList<String>,
     ) {
         var previous: Int? = null
+        var previousHeading: Heading? = null
+        var duplicates = 0
+        var jumps = 0
+        var firstDuplicate: String? = null
+        var firstJump: String? = null
         headings.forEach { heading ->
             if (heading.kind != HeadingKind.CHAPTER || heading.number == null) return@forEach
             val current = heading.number
             val last = previous
             if (last != null) {
                 when {
-                    current <= last -> warnings += "章节编号重复或回退：$last → $current"
-                    current > last + 1 -> warnings += "章节编号跳跃：$last → $current"
+                    current <= last -> {
+                        if (previousHeading == null || !isSubsection(previousHeading!!, heading)) {
+                            duplicates++
+                            if (firstDuplicate == null) firstDuplicate = "$last → $current"
+                        }
+                    }
+                    current > last + 1 -> {
+                        jumps++
+                        if (firstJump == null) firstJump = "$last → $current"
+                    }
                 }
             }
             previous = current
+            previousHeading = heading
+        }
+        if (duplicates > 0) {
+            warnings += "章节编号重复或回退 $duplicates 处（例：$firstDuplicate）"
+        }
+        if (jumps > 0) {
+            warnings += "章节编号跳跃 $jumps 处（例：$firstJump）"
         }
     }
 
     private fun addPrefixWarning(
         text: String,
-        first: Heading,
+        first: Heading?,
         warnings: MutableList<String>,
     ) {
-        if (first.lineStart > 0 && text.substring(0, first.lineStart).any { !it.isWhitespace() }) {
+        if (first != null && first.lineStart > 0 &&
+            text.substring(0, first.lineStart).any { !it.isWhitespace() }
+        ) {
             warnings += "第一个章节标题前存在正文/目录文本，已保留在原文中"
         }
     }
 
-    /** 使用与成熟解析器类似的位值规则，而不是逐字符拼数字。 */
+    private fun looksLikeHeadingToken(line: String): Boolean =
+        NUMBERED_TOKEN.containsMatchIn(line) || SPECIAL_TOKEN.containsMatchIn(line)
+
+    private fun looksLikeAnnouncement(value: String): Boolean {
+        val lower = value.lowercase()
+        val marker = ANNOUNCEMENT_MARKERS.any { lower.contains(it) }
+        val contextHits = ANNOUNCEMENT_CONTEXT.count { lower.contains(it) }
+        return marker || contextHits >= 2
+    }
+
+    /** 使用位值规则解析中文数字和阿拉伯数字。 */
     internal fun parseNumber(raw: String): Int? {
         val text = raw.filterNot { it.isWhitespace() }
         if (text.isEmpty()) return null
         val ascii = text.map { char ->
             if (char in '０'..'９') ('0' + (char - '０')) else char
         }.joinToString("")
-        if (ascii.all { it.isDigit() }) {
-            return ascii.toIntOrNull()
-        }
+        if (ascii.all { it.isDigit() }) return ascii.toIntOrNull()
 
         var total = 0L
         var section = 0L
@@ -292,33 +588,55 @@ class RegexChapterParser : ChapterParser {
     private fun cleanLine(value: String): String =
         value.trim { it.isWhitespace() || it == '\uFEFF' }
 
+    private fun cleanTitle(value: String): String =
+        cleanLine(value).trim { it in SEPARATORS || it.isWhitespace() }
+
+    private fun normalizeTitle(value: String): String =
+        value.filterNot { it.isWhitespace() || it == '\uFEFF' || it in SEPARATORS }
+
     private fun nonBlankLinesBetween(
         lines: List<Line>,
         leftLineIndex: Int,
         rightLineIndex: Int,
-    ): Int = (leftLineIndex + 1 until rightLineIndex).count { lines[it].text.isNotBlank() }
-
-    private fun looksLikeAdvertisement(title: String): Boolean {
-        val lower = title.lowercase()
-        return AD_MARKERS.any { lower.contains(it) }
-    }
-
-    private data class Line(val start: Int, val text: String)
+    ): Int = (leftLineIndex + 1 until rightLineIndex.coerceAtMost(lines.size))
+        .count { lines[it].text.isNotBlank() }
 
     private companion object {
-        const val MAX_LINE_LENGTH = 300
-        const val MIN_TOC_HEADINGS = 4
-
+        const val MAX_TITLE_LENGTH = 300
+        const val MIN_CONFIDENCE = 0.55f
+        val SEPARATORS = setOf(':', '：', '、', '.', '，', ',', '-', '—', '·', '•')
+        val PREFIX_PUNCTUATION = setOf('【', '】', '[', ']', '《', '》', '"', '「', '」', '『', '』', '*', '-', '—')
+        val KNOWN_PREFIX_PATTERN = Regex(
+            """^(正文卷?|VIP卷?|作品相关)(?=$|[\s\u3000:：])""",
+            RegexOption.IGNORE_CASE,
+        )
+        val BODY_MARKERS = listOf(
+            "却说", "话说", "且说", "再说", "次日", "第二天", "第二日", "此时",
+            "原来", "只见", "当下", "且说那", "却说那", "话说那", "后来", "不多时",
+            "作者", "首发", "更新时间",
+        )
+        val ANNOUNCEMENT_CONTEXT = listOf("大家", "请", "投票", "收藏", "更新", "感谢", "本章", "字数")
+        val ANNOUNCEMENT_MARKERS = listOf(
+            "http://", "https://", "www.", "最新网址", "请收藏", "笔趣阁", "手机阅读",
+            "本章未完", "点击下一页", "广告", "加入书签", "投票", "收藏", "字数",
+        )
+        val NUMBERED_TOKEN = Regex(
+            """第[\s\u3000]*([0-9零〇一二三四五六七八九十百千万两]+)[\s\u3000]*([章节回集话卷部篇册])""",
+        )
+        val VOLUME_TOKEN = Regex(
+            """卷[\s\u3000]*([0-9零〇一二三四五六七八九十百千万两]+)""",
+        )
+        val SPECIAL_TOKEN = Regex(
+            """(序章|楔子|引子|前言|序言|序幕|尾声|终章|后记|番外|特别篇)(?=$|[\s\u3000:：、.\-—])""",
+        )
+        val UNNUMBERED_HEADING = Regex("""^(正文|VIP)[\s\u3000:：]+(.+)$""", RegexOption.IGNORE_CASE)
+        val ENGLISH_TOKEN = Regex("""chapter[\s\u3000]+(\d+)""", RegexOption.IGNORE_CASE)
         val DIGITS: Map<Char, Int> = mapOf(
             '零' to 0, '〇' to 0, '一' to 1, '二' to 2, '两' to 2, '三' to 3,
             '四' to 4, '五' to 5, '六' to 6, '七' to 7, '八' to 8, '九' to 9,
         )
         val UNITS: Map<Char, Int> = mapOf(
             '十' to 10, '百' to 100, '千' to 1_000,
-        )
-        val AD_MARKERS = listOf(
-            "http://", "https://", "www.", "最新网址", "请收藏", "笔趣阁", "手机阅读",
-            "本章未完", "点击下一页", "广告", "加入书签",
         )
     }
 }
