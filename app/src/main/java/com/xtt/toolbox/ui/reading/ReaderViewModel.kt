@@ -59,6 +59,8 @@ data class ReaderUiState(
     val chapterId: String? = null,
     val controlsVisible: Boolean = false,
     val activePanel: ReaderPanel? = null,
+    /** 目录显示顺序；仅阅读会话状态，不改章节数据。 */
+    val directoryReversed: Boolean = false,
     val settings: ReaderSettings = ReaderSettings.Default,
     val bookFormat: BookFormat = BookFormat.TXT,
     val imageAttachmentBusy: Boolean = false,
@@ -300,6 +302,11 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     fun closePanel() {
         _uiState.update { it.closeReaderPanel() }
+    }
+
+    /** 只切换目录显示顺序，不改变章节、阅读位置或持久化数据。 */
+    fun toggleDirectoryOrder() {
+        _uiState.update { it.toggleDirectoryOrder() }
     }
 
     /** Markdown 阅读时由用户选择图片目录；完成后重载当前书籍以刷新图片块。 */
@@ -585,3 +592,6 @@ fun ReaderUiState.openReaderPanel(panel: ReaderPanel): ReaderUiState =
 
 fun ReaderUiState.closeReaderPanel(): ReaderUiState =
     copy(activePanel = null)
+
+fun ReaderUiState.toggleDirectoryOrder(): ReaderUiState =
+    copy(directoryReversed = !directoryReversed)

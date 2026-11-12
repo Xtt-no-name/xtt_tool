@@ -48,6 +48,22 @@ class ReaderUiStateTest {
     }
 
     @Test
+    fun directoryOrderToggleKeepsSessionAndReaderState() {
+        val opened = ReaderUiState(
+            activePanel = ReaderPanel.DIRECTORY,
+            currentOffset = 150,
+            chapters = listOf(chapter("第一章", 0), chapter("第二章", 20)),
+        )
+        val reversed = opened.toggleDirectoryOrder()
+
+        assertTrue(reversed.directoryReversed)
+        assertEquals(150, reversed.currentOffset)
+        assertEquals(opened.chapters, reversed.chapters)
+        assertEquals(ReaderPanel.DIRECTORY, reversed.activePanel)
+        assertEquals(false, reversed.toggleDirectoryOrder().directoryReversed)
+    }
+
+    @Test
     fun bodyTapClosesPanelBeforeTogglingControls() {
         val state = ReaderUiState(activePanel = ReaderPanel.NOTES, controlsVisible = true)
         val closed = state.toggleReaderControls()

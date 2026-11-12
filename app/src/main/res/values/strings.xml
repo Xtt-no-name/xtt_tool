@@ -194,6 +194,11 @@
     <string name="reader_settings">设置</string>
     <string name="reader_close">关闭</string>
     <string name="reader_directory_title">目录</string>
+    <string name="reader_directory_order_ascending">正序</string>
+    <string name="reader_directory_order_descending">倒序</string>
+    <string name="reader_directory_order_toggle">切换目录排序</string>
+    <string name="reader_directory_sort_state">当前%1$s，切换为%2$s</string>
+    <string name="reader_directory_close">关闭目录</string>
     <string name="reader_no_chapters_title">暂未识别到章节</string>
     <string name="reader_no_chapters_desc">当前正文没有可靠的独立章节标题，仍可继续连续阅读。</string>
     <string name="reader_notes_title">笔记与书签</string>

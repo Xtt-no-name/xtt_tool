@@ -568,3 +568,47 @@ fun SettingsIcon(modifier: Modifier = Modifier.size(24.dp), tint: Color = LocalC
         drawCircle(tint, radius = w * 0.08f, center = Offset(w * 0.62f, h * 0.7f), style = Stroke(stroke))
     }
 }
+
+/** 正序目录：向上箭头 + 三条渐短列表线。 */
+@Composable
+fun SortAscendingIcon(modifier: Modifier = Modifier.size(20.dp), tint: Color = LocalContentColor.current) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val stroke = 1.7.dp.toPx()
+        drawLine(tint, Offset(w * 0.64f, h * 0.78f), Offset(w * 0.64f, h * 0.22f), stroke, cap = StrokeCap.Round)
+        drawLine(tint, Offset(w * 0.50f, h * 0.36f), Offset(w * 0.64f, h * 0.22f), stroke, cap = StrokeCap.Round)
+        drawLine(tint, Offset(w * 0.78f, h * 0.36f), Offset(w * 0.64f, h * 0.22f), stroke, cap = StrokeCap.Round)
+        listOf(0.32f to 0.44f, 0.50f to 0.50f, 0.68f to 0.56f).forEach { (y, endX) ->
+            drawLine(tint, Offset(w * 0.18f, h * y), Offset(w * endX, h * y), stroke, cap = StrokeCap.Round)
+        }
+    }
+}
+
+/** 倒序目录：向下箭头 + 三条渐短列表线。 */
+@Composable
+fun SortDescendingIcon(modifier: Modifier = Modifier.size(20.dp), tint: Color = LocalContentColor.current) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val stroke = 1.7.dp.toPx()
+        drawLine(tint, Offset(w * 0.64f, h * 0.22f), Offset(w * 0.64f, h * 0.78f), stroke, cap = StrokeCap.Round)
+        drawLine(tint, Offset(w * 0.50f, h * 0.64f), Offset(w * 0.64f, h * 0.78f), stroke, cap = StrokeCap.Round)
+        drawLine(tint, Offset(w * 0.78f, h * 0.64f), Offset(w * 0.64f, h * 0.78f), stroke, cap = StrokeCap.Round)
+        listOf(0.32f to 0.44f, 0.50f to 0.50f, 0.68f to 0.56f).forEach { (y, endX) ->
+            drawLine(tint, Offset(w * 0.18f, h * y), Offset(w * endX, h * y), stroke, cap = StrokeCap.Round)
+        }
+    }
+}
+
+/** 目录关闭：线性 X，与排序图标同线条风格。 */
+@Composable
+fun CloseIcon(modifier: Modifier = Modifier.size(20.dp), tint: Color = LocalContentColor.current) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val stroke = 1.7.dp.toPx()
+        drawLine(tint, Offset(w * 0.28f, h * 0.28f), Offset(w * 0.72f, h * 0.72f), stroke, cap = StrokeCap.Round)
+        drawLine(tint, Offset(w * 0.72f, h * 0.28f), Offset(w * 0.28f, h * 0.72f), stroke, cap = StrokeCap.Round)
+    }
+}

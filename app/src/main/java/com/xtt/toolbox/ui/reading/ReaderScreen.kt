@@ -72,6 +72,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -111,6 +112,7 @@ import com.xtt.toolbox.domain.content.InlineSpan
 import com.xtt.toolbox.domain.reading.ReaderBlock
 import com.xtt.toolbox.domain.reading.ReaderBlockKind
 import com.xtt.toolbox.domain.reading.ReaderChapterTitle
+import com.xtt.toolbox.domain.reading.ReaderDirectoryOrder
 import com.xtt.toolbox.domain.reading.ReaderSettings
 import com.xtt.toolbox.ui.components.AppActionMenu
 import com.xtt.toolbox.ui.components.AppActionMenuItem
@@ -118,8 +120,11 @@ import com.xtt.toolbox.ui.components.AppIconButton
 import com.xtt.toolbox.ui.components.BackArrowIcon
 import com.xtt.toolbox.ui.components.BookIcon
 import com.xtt.toolbox.ui.components.BookmarkIcon
+import com.xtt.toolbox.ui.components.CloseIcon
 import com.xtt.toolbox.ui.components.FolderIcon
 import com.xtt.toolbox.ui.components.SettingsIcon
+import com.xtt.toolbox.ui.components.SortAscendingIcon
+import com.xtt.toolbox.ui.components.SortDescendingIcon
 import com.xtt.toolbox.ui.components.TextLinesIcon
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -145,6 +150,7 @@ fun ReaderScreen(
     onVisiblePositionChanged: (offset: Int, atEnd: Boolean) -> Unit,
     onOpenLink: (String) -> Unit = {},
     onPickMarkdownImageDirectory: () -> Unit = {},
+    onToggleDirectoryOrder: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Box(
@@ -191,6 +197,7 @@ fun ReaderScreen(
                     onVisiblePositionChanged = onVisiblePositionChanged,
                     onOpenLink = onOpenLink,
                     onPickMarkdownImageDirectory = onPickMarkdownImageDirectory,
+                    onToggleDirectoryOrder = onToggleDirectoryOrder,
                 )
             }
         }
@@ -258,6 +265,7 @@ private fun ReaderContent(
     onVisiblePositionChanged: (offset: Int, atEnd: Boolean) -> Unit,
     onOpenLink: (String) -> Unit = {},
     onPickMarkdownImageDirectory: () -> Unit = {},
+    onToggleDirectoryOrder: () -> Unit = {},
 ) {
     val listState = rememberLazyListState(
         initialFirstVisibleItemIndex = state.initialBlockIndex.coerceIn(
@@ -698,7 +706,7 @@ private fun ReaderContent(
             visible = state.activePanel == ReaderPanel.DIRECTORY,
             modifier = Modifier
                 .align(Alignment.CenterStart)
-                .fillMaxHeight(0.5f)
+                .fillMaxHeight()
                 .widthIn(max = 360.dp)
                 .fillMaxWidth(),
             enter = slideInHorizontally(initialOffsetX = { -it }) + fadeIn(),
@@ -707,6 +715,7 @@ private fun ReaderContent(
             DirectoryPanel(
                 state = state,
                 annotationsEnabled = state.supportsAnnotations,
+                onToggleDirectoryOrder = onToggleDirectoryOrder,
                 onChapterClick = { chapter ->
                     val index = state.blocks.indexOfFirst { block ->
                         chapter.startOffset >= block.startOffset &&
@@ -1446,13 +1455,73 @@ private fun PanelScrim(onClose: () -> Unit) {
 private fun DirectoryPanel(
     state: ReaderUiState,
     annotationsEnabled: Boolean,
+    onToggleDirectoryOrder: () -> Unit,
     onChapterClick: (ChapterCandidate) -> Unit,
     onAddChapterComment: (ChapterCandidate) -> Unit,
     onClose: () -> Unit,
 ) {
     var menuChapter by remember { mutableStateOf<ChapterCandidate?>(null) }
+    val sortCurrentLabel = stringResource(
+        if (state.directoryReversed) {
+            R.string.reader_directory_order_descending
+        } else {
+            R.string.reader_directory_order_ascending
+        },
+    )
+    val sortNextLabel = stringResource(
+        if (state.directoryReversed) {
+            R.string.reader_directory_order_ascending
+        } else {
+            R.string.reader_directory_order_descending
+        },
+    )
+    val sortToggleDescription = stringResource(
+        R.string.reader_directory_sort_state,
+        sortCurrentLabel,
+        sortNextLabel,
+    )
+    val closeDescription = stringResource(R.string.reader_directory_close)
+    val listState = rememberLazyListState()
+    val orderedChapters = remember(state.chapters, state.directoryReversed) {
+        ReaderDirectoryOrder.ordered(state.chapters, state.directoryReversed)
+    }
+    val currentKey = ReaderDirectoryOrder.currentKey(
+        chapters = state.chapters,
+        currentOffset = state.currentOffset,
+        persistedChapterId = state.chapterId,
+    )
+    val currentIndex = remember(orderedChapters, currentKey) {
+        if (currentKey == null) {
+            -1
+        } else {
+            orderedChapters.indexOfFirst { ReaderChapterTitle.keyOf(it) == currentKey }
+        }
+    }
+    val openToken = remember(state.bookId, state.activePanel) { Any() }
+
+    // 目录每次打开/切换排序都重新定位。先滚到目标项，再按实际条目高度居中；
+    // 首尾条目由 LazyList 自身边界夹紧。
+    LaunchedEffect(openToken, currentIndex, state.directoryReversed, orderedChapters) {
+        if (currentIndex !in orderedChapters.indices) return@LaunchedEffect
+        listState.scrollToItem(currentIndex, 0)
+        withFrameNanos { }
+        withFrameNanos { }
+        val item = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == currentIndex }
+        if (item != null) {
+            val centered = ReaderDirectoryOrder.centerOffset(
+                viewportHeight = listState.layoutInfo.viewportSize.height,
+                itemHeight = item.size,
+            )
+            // scrollOffset 正值会把条目推到视口上方；为了居中应使用负偏移。
+            // 第一项无法向上滚动；避免为了居中在顶部留出空白。
+            listState.scrollToItem(currentIndex, if (currentIndex == 0) 0 else -centered)
+        }
+    }
+
     Surface(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("reader_directory_panel"),
         shape = RoundedCornerShape(topEnd = 20.dp, bottomEnd = 20.dp),
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 4.dp,
@@ -1467,8 +1536,25 @@ private fun DirectoryPanel(
                     style = MaterialTheme.typography.titleMedium,
                 )
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = onClose) {
-                    Text(stringResource(R.string.reader_close))
+                Box(Modifier.testTag("reader_directory_sort")) {
+                    AppIconButton(
+                        contentDescription = sortToggleDescription,
+                        onClick = onToggleDirectoryOrder,
+                    ) {
+                        if (state.directoryReversed) {
+                            SortDescendingIcon()
+                        } else {
+                            SortAscendingIcon()
+                        }
+                    }
+                }
+                Box(Modifier.testTag("reader_directory_close")) {
+                    AppIconButton(
+                        contentDescription = closeDescription,
+                        onClick = onClose,
+                    ) {
+                        CloseIcon()
+                    }
                 }
             }
             Row(
@@ -1521,17 +1607,19 @@ private fun DirectoryPanel(
                 }
             } else {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
+                        .weight(1f)
+                        .testTag("reader_directory_list"),
                     contentPadding = PaddingValues(vertical = 4.dp),
                 ) {
                     items(
-                        items = state.chapters,
-                        key = { it.startOffset },
+                        items = orderedChapters,
+                        key = { ReaderChapterTitle.keyOf(it) },
                     ) { chapter ->
-                        val selected = chapter.startOffset <= state.currentOffset &&
-                            state.currentOffset < chapter.endOffset
+                        val selected = currentKey != null &&
+                            ReaderChapterTitle.keyOf(chapter) == currentKey
                         Box {
                             Row(
                                 modifier = Modifier

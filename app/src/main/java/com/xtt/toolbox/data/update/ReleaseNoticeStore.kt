@@ -11,6 +11,16 @@ data class ReleaseNotes(
 
 object ReleaseNotesCatalog {
     fun forVersion(versionCode: Int): ReleaseNotes? = when (versionCode) {
+        6 -> ReleaseNotes(
+            versionCode = 6,
+            versionName = "1.0.5",
+            title = "本次更新内容",
+            items = listOf(
+                "阅读器目录占满屏幕高度，打开时自动定位当前章节，并支持正序/倒序切换。",
+                "目录顶部的排序和关闭按钮改为简洁图标，排序状态更直观。",
+                "应用图标更新为“夜空启智之书”黑白书本与星光图案。",
+            ),
+        )
         5 -> ReleaseNotes(
             versionCode = 5,
             versionName = "1.0.4",

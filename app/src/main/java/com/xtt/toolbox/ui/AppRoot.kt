@@ -692,6 +692,7 @@ fun AppRoot() {
                 onToggleControls = readerViewModel::toggleControls,
                 onOpenPanel = readerViewModel::openPanel,
                 onClosePanel = readerViewModel::closePanel,
+                onToggleDirectoryOrder = readerViewModel::toggleDirectoryOrder,
                 onSettingsChange = readerViewModel::updateSettings,
                 onAddBookmark = readerViewModel::addBookmark,
                 onAddPassageComment = readerViewModel::addPassageComment,
