@@ -27,6 +27,15 @@ class AppSettingsStore(context: Context) {
         preferences.getBoolean(KEY_EXCLUDE_PUNCTUATION, false),
     )
     val excludePunctuation: StateFlow<Boolean> = _excludePunctuation.asStateFlow()
+    private val _showHiddenContent = MutableStateFlow(
+        preferences.getBoolean(KEY_SHOW_HIDDEN_CONTENT, true),
+    )
+    val showHiddenContent: StateFlow<Boolean> = _showHiddenContent.asStateFlow()
+
+    fun setShowHiddenContent(enabled: Boolean) {
+        _showHiddenContent.value = enabled
+        preferences.edit().putBoolean(KEY_SHOW_HIDDEN_CONTENT, enabled).apply()
+    }
 
     fun setExcludePunctuation(enabled: Boolean) {
         _excludePunctuation.value = enabled
@@ -87,6 +96,7 @@ class AppSettingsStore(context: Context) {
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_SEARCH_HISTORY = "search_history_enabled"
         const val KEY_EXCLUDE_PUNCTUATION = "word_count_exclude_punctuation"
+        const val KEY_SHOW_HIDDEN_CONTENT = "show_hidden_content"
         const val KEY_FONT_SIZE = "reader_font_size"
         const val KEY_LINE_HEIGHT = "reader_line_height"
         const val KEY_PARAGRAPH_SPACING = "reader_paragraph_spacing"

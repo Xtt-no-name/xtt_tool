@@ -29,6 +29,7 @@ class WritingViewModel(application: Application) : AndroidViewModel(application)
     private val library = container.writingLibraryService
     private val importService = container.writingImportService
     private val coverService = container.writingCoverService
+    private val repository = container.repository
     private val contentResolver = application.contentResolver
 
     private val _uiState = MutableStateFlow(WritingUiState())
@@ -38,6 +39,12 @@ class WritingViewModel(application: Application) : AndroidViewModel(application)
         runOperation {
             val detail = catalog.load(bookId).getOrThrow()
             _uiState.update { it.copy(detail = detail, loading = false) }
+            // 写作书架与阅读书架共用 lastOpenedAt 的历史活动排序。
+            repository.touchLastOpenedAt(bookId).onFailure { error ->
+                _uiState.update {
+                    it.copy(message = error.message ?: "最近打开时间保存失败")
+                }
+            }
         }
     }
 

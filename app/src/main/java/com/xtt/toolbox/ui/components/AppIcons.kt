@@ -612,3 +612,16 @@ fun CloseIcon(modifier: Modifier = Modifier.size(20.dp), tint: Color = LocalCont
         drawLine(tint, Offset(w * 0.72f, h * 0.28f), Offset(w * 0.28f, h * 0.72f), stroke, cap = StrokeCap.Round)
     }
 }
+
+/** 更多操作的三点图标。 */
+@Composable
+fun MoreVertIcon(modifier: Modifier = Modifier.size(20.dp), tint: Color = LocalContentColor.current) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val radius = w * 0.075f
+        listOf(0.28f, 0.5f, 0.72f).forEach { y ->
+            drawCircle(tint, radius = radius, center = Offset(w * 0.5f, h * y))
+        }
+    }
+}

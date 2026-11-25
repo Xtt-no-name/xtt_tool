@@ -24,6 +24,7 @@ import com.xtt.toolbox.data.settings.AppSettingsStore
 import com.xtt.toolbox.data.repository.WritingHistoryRepository
 import com.xtt.toolbox.data.repository.SqliteBookRepository
 import com.xtt.toolbox.data.repository.SqliteReaderAnnotationRepository
+import com.xtt.toolbox.data.repository.SqliteShelfGroupRepository
 import com.xtt.toolbox.domain.writing.WritingDocumentService
 import com.xtt.toolbox.domain.writing.WritingCatalogService
 import com.xtt.toolbox.domain.writing.WritingCoverService
@@ -53,6 +54,8 @@ class AppContainer(context: Context) {
         FileBookContentStore(File(applicationContext.filesDir, "library"))
 
     val repository: BookRepository = SqliteBookRepository(database)
+
+    val shelfGroupRepository = SqliteShelfGroupRepository(database, repository)
 
     val backupService = BackupService(
         applicationContext,

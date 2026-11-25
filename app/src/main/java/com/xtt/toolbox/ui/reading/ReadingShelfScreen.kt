@@ -41,8 +41,10 @@ import androidx.compose.ui.unit.dp
 import com.xtt.toolbox.R
 import com.xtt.toolbox.data.model.Book
 import com.xtt.toolbox.data.model.BookFormat
+import com.xtt.toolbox.data.model.ShelfGroup
+import com.xtt.toolbox.data.model.ShelfType
 import com.xtt.toolbox.data.model.SourceType
-import com.xtt.toolbox.domain.reading.ReadingShelfOrdering
+import com.xtt.toolbox.domain.reading.ShelfActivityOrdering
 import com.xtt.toolbox.ui.components.AppActionMenu
 import com.xtt.toolbox.ui.components.AppActionMenuItem
 import com.xtt.toolbox.ui.components.AppConfirmDialog
@@ -50,10 +52,20 @@ import com.xtt.toolbox.ui.components.AppIconButton
 import com.xtt.toolbox.ui.components.BookIcon
 import com.xtt.toolbox.ui.components.DeleteIcon
 import com.xtt.toolbox.ui.components.EmptyStateCard
+import com.xtt.toolbox.ui.components.FolderIcon
 import com.xtt.toolbox.ui.components.ImportIcon
+import com.xtt.toolbox.ui.components.MoreVertIcon
 import com.xtt.toolbox.ui.components.ScreenNote
 import com.xtt.toolbox.ui.components.SectionHeader
 import com.xtt.toolbox.ui.components.ViewModeToggle
+import com.xtt.toolbox.ui.shelf.BookOrganizationActionItems
+import com.xtt.toolbox.ui.shelf.HiddenBadge
+import com.xtt.toolbox.ui.shelf.ShelfGroupDeleteDialog
+import com.xtt.toolbox.ui.shelf.ShelfGroupDetailDialog
+import com.xtt.toolbox.ui.shelf.ShelfGroupGridTile
+import com.xtt.toolbox.ui.shelf.ShelfGroupNameDialog
+import com.xtt.toolbox.ui.shelf.ShelfGroupPickerDialog
+import com.xtt.toolbox.ui.shelf.ShelfGroupRow
 import kotlin.math.roundToInt
 
 @Composable
@@ -65,10 +77,47 @@ fun ReadingShelfScreen(
     coverPaths: Map<String, String> = emptyMap(),
     onDeleteBook: (Book) -> Unit = {},
     importInProgress: Boolean = false,
+    groups: List<ShelfGroup> = emptyList(),
+    showHiddenContent: Boolean = true,
+    onCreateGroup: (String) -> Unit = {},
+    onRenameGroup: (ShelfGroup, String) -> Unit = { _, _ -> },
+    onDeleteGroup: (ShelfGroup) -> Unit = {},
+    onToggleGroupHidden: (ShelfGroup, Boolean) -> Unit = { _, _ -> },
+    onAssignBookGroup: (Book, String?) -> Unit = { _, _ -> },
+    onToggleBookHidden: (Book, Boolean) -> Unit = { _, _ -> },
 ) {
     var isGridView by rememberSaveable { mutableStateOf(true) }
     var pendingDelete by remember { mutableStateOf<Book?>(null) }
-    val orderedBooks = ReadingShelfOrdering.ordered(books)
+    var groupPickerBook by remember { mutableStateOf<Book?>(null) }
+    var createGroupVisible by remember { mutableStateOf(false) }
+    var renamingGroup by remember { mutableStateOf<ShelfGroup?>(null) }
+    var deletingGroup by remember { mutableStateOf<ShelfGroup?>(null) }
+    var openedGroup by remember { mutableStateOf<ShelfGroup?>(null) }
+
+    val orderedBooks = ShelfActivityOrdering.orderedBooks(books)
+    val shelfGroups = groups
+        .filter { it.shelfType == ShelfType.READING }
+        .filter { showHiddenContent || !it.isHidden }
+    val visibleBooks = orderedBooks.filter { showHiddenContent || !it.isHidden }
+    val groupIds = groups.map { it.groupId }.toSet()
+    val ungroupedBooks = visibleBooks.filter { it.groupId == null || it.groupId !in groupIds }
+    val groupBooks = shelfGroups.associateWith { group ->
+        ShelfActivityOrdering.orderedBooks(
+            visibleBooks.filter { it.groupId == group.groupId },
+        )
+    }
+    val entries = buildList {
+        shelfGroups.forEach { group ->
+            add(ShelfEntry.GroupItem(group, groupBooks[group].orEmpty()))
+        }
+        ungroupedBooks.forEach { add(ShelfEntry.BookItem(it)) }
+    }.sortedByDescending { entry ->
+        when (entry) {
+            is ShelfEntry.GroupItem ->
+                ShelfActivityOrdering.groupActivity(entry.group.groupId, books)
+            is ShelfEntry.BookItem -> ShelfActivityOrdering.bookActivity(entry.book)
+        }
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -84,6 +133,12 @@ fun ReadingShelfScreen(
                         horizontalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
                         AppIconButton(
+                            contentDescription = "新建分组",
+                            onClick = { createGroupVisible = true },
+                        ) {
+                            FolderIcon()
+                        }
+                        AppIconButton(
                             contentDescription = stringResource(R.string.import_book),
                             onClick = onImport,
                             enabled = !importInProgress,
@@ -98,7 +153,7 @@ fun ReadingShelfScreen(
                 },
             )
         }
-        if (orderedBooks.isEmpty()) {
+        if (entries.isEmpty()) {
             item(key = "empty_bookshelf") {
                 EmptyStateCard(
                     icon = { BookIcon(tint = MaterialTheme.colorScheme.primary) },
@@ -109,21 +164,44 @@ fun ReadingShelfScreen(
         } else if (isGridView) {
             item(key = "bookshelf_grid") {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    orderedBooks.chunked(2).forEach { rowBooks ->
+                    entries.chunked(2).forEach { rowEntries ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            rowBooks.forEach { book ->
-                                BookTile(
-                                    book = book,
-                                    coverPath = coverPaths[book.bookId],
-                                    modifier = Modifier.weight(1f),
-                                    onClick = { onOpenBook(book) },
-                                    onDelete = { pendingDelete = book },
-                                )
+                            rowEntries.forEach { entry ->
+                                when (entry) {
+                                    is ShelfEntry.GroupItem -> ShelfGroupGridTile(
+                                        group = entry.group,
+                                        books = entry.books,
+                                        coverPaths = coverPaths,
+                                        onOpen = { openedGroup = entry.group },
+                                        onRename = { renamingGroup = entry.group },
+                                        onToggleHidden = {
+                                            onToggleGroupHidden(entry.group, !entry.group.isHidden)
+                                        },
+                                        onDelete = { deletingGroup = entry.group },
+                                        modifier = Modifier.weight(1f),
+                                    )
+
+                                    is ShelfEntry.BookItem -> BookTile(
+                                        book = entry.book,
+                                        coverPath = coverPaths[entry.book.bookId],
+                                        groups = shelfGroups,
+                                        modifier = Modifier.weight(1f),
+                                        onClick = { onOpenBook(entry.book) },
+                                        onPickGroup = { groupPickerBook = entry.book },
+                                        onClearGroup = {
+                                            onAssignBookGroup(entry.book, null)
+                                        },
+                                        onToggleHidden = {
+                                            onToggleBookHidden(entry.book, !entry.book.isHidden)
+                                        },
+                                        onDelete = { pendingDelete = entry.book },
+                                    )
+                                }
                             }
-                            if (rowBooks.size == 1) {
+                            if (rowEntries.size == 1) {
                                 Spacer(Modifier.weight(1f))
                             }
                         }
@@ -131,13 +209,38 @@ fun ReadingShelfScreen(
                 }
             }
         } else {
-            items(orderedBooks, key = { it.bookId }) { book ->
-                BookRow(
-                    book = book,
-                    coverPath = coverPaths[book.bookId],
-                    onClick = { onOpenBook(book) },
-                    onDelete = { pendingDelete = book },
-                )
+            items(entries, key = { entry ->
+                when (entry) {
+                    is ShelfEntry.GroupItem -> "group-${entry.group.groupId}"
+                    is ShelfEntry.BookItem -> "book-${entry.book.bookId}"
+                }
+            }) { entry ->
+                when (entry) {
+                    is ShelfEntry.GroupItem -> ShelfGroupRow(
+                        group = entry.group,
+                        books = entry.books,
+                        coverPaths = coverPaths,
+                        onOpen = { openedGroup = entry.group },
+                        onRename = { renamingGroup = entry.group },
+                        onToggleHidden = {
+                            onToggleGroupHidden(entry.group, !entry.group.isHidden)
+                        },
+                        onDelete = { deletingGroup = entry.group },
+                    )
+
+                    is ShelfEntry.BookItem -> BookRow(
+                        book = entry.book,
+                        coverPath = coverPaths[entry.book.bookId],
+                        groups = shelfGroups,
+                        onClick = { onOpenBook(entry.book) },
+                        onPickGroup = { groupPickerBook = entry.book },
+                        onClearGroup = { onAssignBookGroup(entry.book, null) },
+                        onToggleHidden = {
+                            onToggleBookHidden(entry.book, !entry.book.isHidden)
+                        },
+                        onDelete = { pendingDelete = entry.book },
+                    )
+                }
             }
         }
         item(key = "reading_note") {
@@ -159,14 +262,100 @@ fun ReadingShelfScreen(
             onDismiss = { pendingDelete = null },
         )
     }
+
+    if (createGroupVisible) {
+        ShelfGroupNameDialog(
+            title = "新建分组",
+            initial = "",
+            onDismiss = { createGroupVisible = false },
+            onConfirm = { name ->
+                createGroupVisible = false
+                onCreateGroup(name)
+            },
+        )
+    }
+
+    renamingGroup?.let { group ->
+        ShelfGroupNameDialog(
+            title = "重命名分组",
+            initial = group.name,
+            onDismiss = { renamingGroup = null },
+            onConfirm = { name ->
+                renamingGroup = null
+                onRenameGroup(group, name)
+            },
+        )
+    }
+
+    deletingGroup?.let { group ->
+        ShelfGroupDeleteDialog(
+            group = group,
+            onDismiss = { deletingGroup = null },
+            onConfirm = {
+                deletingGroup = null
+                onDeleteGroup(group)
+            },
+        )
+    }
+
+    groupPickerBook?.let { book ->
+        ShelfGroupPickerDialog(
+            bookTitle = book.title,
+            groups = shelfGroups,
+            currentGroupId = book.groupId,
+            onDismiss = { groupPickerBook = null },
+            onSelect = { groupId ->
+                groupPickerBook = null
+                onAssignBookGroup(book, groupId)
+            },
+        )
+    }
+
+    openedGroup?.let { group ->
+        ShelfGroupDetailDialog(
+            group = group,
+            books = groupBooks[group].orEmpty(),
+            coverPaths = coverPaths,
+            onOpenBook = { book ->
+                openedGroup = null
+                onOpenBook(book)
+            },
+            groups = shelfGroups,
+            onPickGroup = { book ->
+                openedGroup = null
+                groupPickerBook = book
+            },
+            onClearGroup = { book ->
+                openedGroup = null
+                onAssignBookGroup(book, null)
+            },
+            onToggleBookHidden = { book ->
+                onToggleBookHidden(book, !book.isHidden)
+            },
+            onDeleteBook = { book ->
+                openedGroup = null
+                pendingDelete = book
+            },
+            onDismiss = { openedGroup = null },
+        )
+    }
+}
+
+private sealed interface ShelfEntry {
+    data class GroupItem(val group: ShelfGroup, val books: List<Book>) : ShelfEntry
+    data class BookItem(val book: Book) : ShelfEntry
 }
 
 @Composable
 private fun BookTile(
     book: Book,
     coverPath: String?,
+    groups: List<ShelfGroup>,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
+    onPickGroup: () -> Unit,
+    onClearGroup: () -> Unit,
+    onToggleHidden: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var menuExpanded by remember(book.bookId) { mutableStateOf(false) }
@@ -213,6 +402,10 @@ private fun BookTile(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (book.isHidden) {
+                    Spacer(Modifier.height(4.dp))
+                    HiddenBadge()
+                }
                 Spacer(Modifier.height(2.dp))
                 Text(
                     text = sourceLabel(book),
@@ -234,16 +427,22 @@ private fun BookTile(
             expanded = menuExpanded,
             onDismissRequest = { menuExpanded = false },
         ) {
-            AppActionMenuItem(
-                text = stringResource(R.string.delete_book_confirm),
-                danger = true,
-                icon = {
-                    DeleteIcon(
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.error,
-                    )
+            BookOrganizationActionItems(
+                book = book,
+                groups = groups,
+                onPickGroup = {
+                    menuExpanded = false
+                    onPickGroup()
                 },
-                onClick = {
+                onClearGroup = {
+                    menuExpanded = false
+                    onClearGroup()
+                },
+                onToggleHidden = {
+                    menuExpanded = false
+                    onToggleHidden()
+                },
+                onDelete = {
                     menuExpanded = false
                     onDelete()
                 },
@@ -259,68 +458,111 @@ internal fun BookRow(
     onClick: () -> Unit,
     onDelete: () -> Unit,
     showDelete: Boolean = true,
+    groups: List<ShelfGroup> = emptyList(),
+    onPickGroup: () -> Unit = {},
+    onClearGroup: () -> Unit = {},
+    onToggleHidden: () -> Unit = {},
 ) {
+    var menuExpanded by remember(book.bookId) { mutableStateOf(false) }
     val deleteDescription = stringResource(R.string.delete_book_action, book.title)
-    Card(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-        ),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    Box {
+        Card(
+            onClick = onClick,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+            ),
         ) {
-            BookCover(
-                coverPath = coverPath,
-                modifier = Modifier.size(44.dp, 58.dp),
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text = book.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BookCover(
+                    coverPath = coverPath,
+                    modifier = Modifier.size(44.dp, 58.dp),
                 )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = sourceLabel(book),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = progressLabel(book),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Text(
-                text = stringResource(R.string.continue_reading),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            if (showDelete) {
-                IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier
-                        .size(32.dp)
-                        .semantics { contentDescription = deleteDescription },
-                ) {
-                    DeleteIcon(
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = book.title,
+                            modifier = Modifier.weight(1f, fill = false),
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (book.isHidden) {
+                            Spacer(Modifier.width(4.dp))
+                            HiddenBadge()
+                        }
+                    }
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = sourceLabel(book),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = progressLabel(book),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                Text(
+                    text = stringResource(R.string.continue_reading),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    MoreVertIcon(Modifier.size(18.dp))
+                }
+                if (showDelete) {
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier
+                            .size(32.dp)
+                            .semantics { contentDescription = deleteDescription },
+                    ) {
+                        DeleteIcon(
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
+        }
+        AppActionMenu(
+            expanded = menuExpanded,
+            onDismissRequest = { menuExpanded = false },
+        ) {
+            BookOrganizationActionItems(
+                book = book,
+                groups = groups,
+                onPickGroup = {
+                    menuExpanded = false
+                    onPickGroup()
+                },
+                onClearGroup = {
+                    menuExpanded = false
+                    onClearGroup()
+                },
+                onToggleHidden = {
+                    menuExpanded = false
+                    onToggleHidden()
+                },
+                onDelete = {
+                    menuExpanded = false
+                    onDelete()
+                },
+            )
         }
     }
 }

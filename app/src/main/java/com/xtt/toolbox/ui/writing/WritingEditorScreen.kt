@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
@@ -260,6 +259,9 @@ fun WritingEditorScreen(
         editorBodyHeight,
         textFieldTop,
     ) {
+        // 图片模式由 ImageChapterEditorBody 按每个文本片段的实际布局自动滚动；
+        // 这里不能复用普通文本分支的 TextLayoutResult，否则图片上方会使用旧坐标。
+        if (state.draft?.images?.isNotEmpty() == true) return@LaunchedEffect
         if (state.selectionStart < bodyStart || editorBodyHeight <= 0) return@LaunchedEffect
         val layout = textLayoutResult ?: return@LaunchedEffect
         val localOffset = (state.selectionStart - bodyStart)
@@ -404,7 +406,11 @@ fun WritingEditorScreen(
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    // 图片分支和纯文本分支共用同一视口高度；不能只在纯文本
+                    // 分支测量，否则含图片的章节在键盘弹出或重新打开后
+                    // viewportHeight 会保持 0/旧值，自动跟随直接失效。
+                    .onSizeChanged { editorBodyHeight = it.height },
             ) {
                 if (state.loading || draft == null) {
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
@@ -433,7 +439,6 @@ fun WritingEditorScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .onSizeChanged { editorBodyHeight = it.height }
                             .verticalScroll(editorScroll)
                             .padding(horizontal = 20.dp, vertical = 16.dp),
                     ) {
@@ -812,7 +817,6 @@ private fun WritingToolboxScreen(
         Column(
             Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
                 .navigationBarsPadding(),
         ) {
             Row(

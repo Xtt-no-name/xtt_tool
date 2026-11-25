@@ -26,15 +26,21 @@ class WritingLibraryService(
             ?: return@withContext Result.failure(IllegalStateException("书籍没有内部正文"))
         val text = TextOffsets.normalizeNewlines(contentStore.readText(location))
         val sourceDocument = repository.loadDocument(bookId)
+        val movedBook = book.copy(
+            shelfType = ShelfType.WRITING,
+            format = BookFormat.DRAFT,
+            // 阅读分组不能跨书架带入写作分组。
+            groupId = null,
+        )
         val writingDocument = if (sourceDocument == null) {
             WritingDocumentFactory.plainText(
-                book.copy(shelfType = ShelfType.WRITING, format = BookFormat.DRAFT),
+                movedBook,
                 text,
                 "",
             )
         } else {
             WritingDocument(
-                book = book.copy(shelfType = ShelfType.WRITING, format = BookFormat.DRAFT),
+                book = movedBook,
                 text = text,
                 document = sourceDocument,
             )

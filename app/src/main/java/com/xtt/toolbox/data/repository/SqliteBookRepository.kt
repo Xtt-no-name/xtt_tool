@@ -174,6 +174,51 @@ class SqliteBookRepository(
         }
     }
 
+    override suspend fun updateBookOrganization(
+        bookId: String,
+        groupId: String?,
+        isHidden: Boolean,
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val rows = database.updateBookOrganization(bookId, groupId, isHidden)
+            if (rows <= 0) {
+                return@withContext Result.failure(NoSuchElementException("书籍不存在：$bookId"))
+            }
+            _books.update { current ->
+                current.map { book ->
+                    if (book.bookId == bookId) {
+                        book.copy(groupId = groupId, isHidden = isHidden)
+                    } else {
+                        book
+                    }
+                }
+            }
+            Result.success(Unit)
+        } catch (error: Throwable) {
+            Result.failure(error)
+        }
+    }
+
+    override suspend fun touchLastOpenedAt(
+        bookId: String,
+        lastOpenedAt: Long,
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val rows = database.touchLastOpenedAt(bookId, lastOpenedAt)
+            if (rows <= 0) {
+                return@withContext Result.failure(NoSuchElementException("书籍不存在：$bookId"))
+            }
+            _books.update { current ->
+                current.map { book ->
+                    if (book.bookId == bookId) book.copy(lastOpenedAt = lastOpenedAt) else book
+                }
+            }
+            Result.success(Unit)
+        } catch (error: Throwable) {
+            Result.failure(error)
+        }
+    }
+
     override suspend fun removeFromShelf(bookId: String) = withContext(Dispatchers.IO) {
         database.delete(bookId)
         _books.update { current -> current.filterNot { it.bookId == bookId } }

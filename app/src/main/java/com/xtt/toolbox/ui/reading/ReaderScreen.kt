@@ -30,6 +30,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -1157,8 +1162,13 @@ private fun ReaderIdleFooter(state: ReaderUiState) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .windowInsetsPadding(
+                WindowInsets.displayCutout.only(
+                    WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom,
+                ),
+            )
             .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 2.dp),
+            .padding(horizontal = 24.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -1344,8 +1354,13 @@ private fun ReaderBottomBar(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .windowInsetsPadding(
+                    WindowInsets.displayCutout.only(
+                        WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom,
+                    ),
+                )
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 10.dp),
+                .padding(horizontal = 24.dp, vertical = 10.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),

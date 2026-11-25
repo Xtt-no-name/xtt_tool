@@ -9,8 +9,15 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Scaffold
@@ -41,6 +48,8 @@ import com.xtt.toolbox.data.AppContainerProvider
 import com.xtt.toolbox.data.backup.BackupInfo
 import com.xtt.toolbox.data.importing.BookImportSelection
 import com.xtt.toolbox.data.importing.BookImportSelectionRouter
+import com.xtt.toolbox.data.model.Book
+import com.xtt.toolbox.data.model.ShelfGroup
 import com.xtt.toolbox.data.model.ShelfType
 import com.xtt.toolbox.data.profile.AvatarImageState
 import com.xtt.toolbox.data.profile.AvatarLoader
@@ -161,6 +170,8 @@ fun AppRoot() {
     val readerSettings by container.appSettingsStore.readerSettings.collectAsState()
     val searchHistoryEnabled by container.appSettingsStore.searchHistoryEnabled.collectAsState()
     val excludePunctuation by container.appSettingsStore.excludePunctuation.collectAsState()
+    val showHiddenContent by container.appSettingsStore.showHiddenContent.collectAsState()
+    val shelfGroups by container.shelfGroupRepository.groups.collectAsState()
     val searchHistory by container.searchHistoryStore.history.collectAsState()
     LaunchedEffect(searchHistoryEnabled) {
         container.searchHistoryStore.setEnabled(searchHistoryEnabled)
@@ -245,6 +256,58 @@ fun AppRoot() {
     val showMessage: (String) -> Unit = { message ->
         scope.launch {
             snackbarHostState.showSnackbar(message)
+        }
+    }
+    val createShelfGroup: (ShelfType, String) -> Unit = { shelfType, name ->
+        scope.launch {
+            container.shelfGroupRepository.create(shelfType, name).fold(
+                onSuccess = { showMessage("已创建分组「${it.name}」") },
+                onFailure = { showMessage(it.message ?: "创建分组失败") },
+            )
+        }
+    }
+    val renameShelfGroup: (ShelfGroup, String) -> Unit = { group, name ->
+        scope.launch {
+            container.shelfGroupRepository.rename(group.groupId, name).fold(
+                onSuccess = { showMessage("分组已重命名") },
+                onFailure = { showMessage(it.message ?: "重命名分组失败") },
+            )
+        }
+    }
+    val deleteShelfGroup: (ShelfGroup) -> Unit = { group ->
+        scope.launch {
+            container.shelfGroupRepository.delete(group.groupId).fold(
+                onSuccess = { showMessage("已删除分组「${group.name}」，作品已保留") },
+                onFailure = { showMessage(it.message ?: "删除分组失败") },
+            )
+        }
+    }
+    val toggleShelfGroupHidden: (ShelfGroup, Boolean) -> Unit = { group, hidden ->
+        scope.launch {
+            container.shelfGroupRepository.setHidden(group.groupId, hidden).fold(
+                onSuccess = {
+                    showMessage(if (hidden) "已隐藏分组「${group.name}」" else "已取消隐藏分组")
+                },
+                onFailure = { showMessage(it.message ?: "更新分组失败") },
+            )
+        }
+    }
+    val assignBookGroup: (Book, String?) -> Unit = { book, groupId ->
+        scope.launch {
+            repository.updateBookOrganization(book.bookId, groupId, book.isHidden).fold(
+                onSuccess = { showMessage(if (groupId == null) "已移出分组" else "已移动到分组") },
+                onFailure = { showMessage(it.message ?: "移动分组失败") },
+            )
+        }
+    }
+    val toggleBookHidden: (Book, Boolean) -> Unit = { book, hidden ->
+        scope.launch {
+            repository.updateBookOrganization(book.bookId, book.groupId, hidden).fold(
+                onSuccess = {
+                    showMessage(if (hidden) "已隐藏《${book.title}》" else "已取消隐藏《${book.title}》")
+                },
+                onFailure = { showMessage(it.message ?: "更新作品隐藏状态失败") },
+            )
         }
     }
     var exportBytes by remember { mutableStateOf<ByteArray?>(null) }
@@ -409,6 +472,7 @@ fun AppRoot() {
         } else {
             showMessage(libraryLoadFailed)
         }
+        runCatching { container.shelfGroupRepository.reload() }
     }
 
     LaunchedEffect(books) {
@@ -518,6 +582,12 @@ fun AppRoot() {
 
     Scaffold(
         topBar = {
+            // 状态栏在 App 内隐藏后，顶部避开刘海/挖孔区域。
+            Box(
+                Modifier.windowInsetsPadding(
+                    WindowInsets.displayCutout.only(WindowInsetsSides.Top),
+                ),
+            ) {
             when {
                 readerState.isVisible -> Unit
 
@@ -668,6 +738,7 @@ fun AppRoot() {
                     },
                 )
             }
+            }
         },
         bottomBar = {
             if (!showProfile && !showReadingSearch && !importState.isVisible &&
@@ -682,6 +753,18 @@ fun AppRoot() {
         },
         snackbarHost = { AppSnackbarHost(snackbarHostState) },
         containerColor = MaterialTheme.colorScheme.background,
+        // 状态栏在 App 内已隐藏，内容顶部只保留 displayCutout，不再保留
+        // statusBars 顶部高度。普通页面仍保留底部导航；编辑器的底部由编辑器
+        // 自己处理 IME/导航 Insets。
+        contentWindowInsets = WindowInsets.displayCutout.union(
+            WindowInsets.systemBars.only(
+                if (writingEditorState.visible) {
+                    WindowInsetsSides.Horizontal
+                } else {
+                    WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom
+                },
+            ),
+        ),
     ) { innerPadding ->
         val contentModifier = Modifier.padding(innerPadding)
         when {
@@ -747,6 +830,8 @@ fun AppRoot() {
                     container.appSettingsStore.setSearchHistoryEnabled(enabled)
                     container.searchHistoryStore.setEnabled(enabled)
                 },
+                showHiddenContent = showHiddenContent,
+                onShowHiddenContentChange = container.appSettingsStore::setShowHiddenContent,
                 modifier = contentModifier,
             )
             showProfile -> ProfileScreen(
@@ -786,6 +871,14 @@ fun AppRoot() {
                             readerViewModel.open(book.bookId)
                         },
                         coverPaths = coverPaths,
+                        groups = shelfGroups,
+                        showHiddenContent = showHiddenContent,
+                        onCreateGroup = { name -> createShelfGroup(ShelfType.READING, name) },
+                        onRenameGroup = renameShelfGroup,
+                        onDeleteGroup = deleteShelfGroup,
+                        onToggleGroupHidden = toggleShelfGroupHidden,
+                        onAssignBookGroup = assignBookGroup,
+                        onToggleBookHidden = toggleBookHidden,
                         onDeleteBook = { book ->
                             scope.launch {
                                 val result = container.bookDeletionService.delete(book.bookId)
@@ -906,6 +999,14 @@ fun AppRoot() {
                             WritingShelfScreen(
                                 books = books.filter { it.shelfType == ShelfType.WRITING },
                                 coverPaths = coverPaths,
+                                groups = shelfGroups,
+                                showHiddenContent = showHiddenContent,
+                                onCreateGroup = { name -> createShelfGroup(ShelfType.WRITING, name) },
+                                onRenameGroup = renameShelfGroup,
+                                onDeleteGroup = deleteShelfGroup,
+                                onToggleGroupHidden = toggleShelfGroupHidden,
+                                onAssignBookGroup = assignBookGroup,
+                                onToggleBookHidden = toggleBookHidden,
                                 onOpenBook = { book -> writingViewModel.open(book.bookId) },
                                 onDeleteBook = { book ->
                                     scope.launch {

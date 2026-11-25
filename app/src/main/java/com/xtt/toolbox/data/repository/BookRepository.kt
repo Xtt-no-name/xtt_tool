@@ -70,6 +70,35 @@ interface BookRepository {
     suspend fun upsert(book: Book)
 
     /**
+     * 只更新作品的分组归属和隐藏标记，不改变正文、阅读位置或时间戳。
+     * 默认实现供轻量仓库使用；SQLite 实现使用专用列更新。
+     */
+    suspend fun updateBookOrganization(
+        bookId: String,
+        groupId: String?,
+        isHidden: Boolean,
+    ): Result<Unit> {
+        val book = getBook(bookId)
+            ?: return Result.failure(NoSuchElementException("书籍不存在：$bookId"))
+        upsert(book.copy(groupId = groupId, isHidden = isHidden))
+        return Result.success(Unit)
+    }
+
+    /**
+     * 只更新最近打开时间，不改变阅读位置、正文、分组或隐藏状态。
+     * 用于写作书架打开作品时参与与阅读书架一致的历史排序。
+     */
+    suspend fun touchLastOpenedAt(
+        bookId: String,
+        lastOpenedAt: Long = System.currentTimeMillis(),
+    ): Result<Unit> {
+        val book = getBook(bookId)
+            ?: return Result.failure(NoSuchElementException("书籍不存在：$bookId"))
+        upsert(book.copy(lastOpenedAt = lastOpenedAt))
+        return Result.success(Unit)
+    }
+
+    /**
      * 只更新某本书的阅读位置和可选最近打开时间，不触碰正文或其他书籍。
      *
      * 数据库写入成功后才会更新 [books] 缓存；失败返回 failure，调用方不得假报保存成功。

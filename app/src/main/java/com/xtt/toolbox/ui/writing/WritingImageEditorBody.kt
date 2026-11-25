@@ -189,7 +189,9 @@ fun ImageChapterEditorBody(
                     var segmentLayout by remember(node.key) {
                         mutableStateOf<TextLayoutResult?>(null)
                     }
-                    var segmentTop by remember(node.key) { mutableStateOf(0f) }
+                    // 初值必须是 null：节点重建时不能让滚动定位先使用 0 作为
+                    // segmentTop，否则图片上方会暂时被当成内容顶部并造成跳转。
+                    var segmentTop by remember(node.key) { mutableStateOf<Float?>(null) }
                     val cursorMarginPx = with(LocalDensity.current) { 24.dp.toPx() }
                     LaunchedEffect(
                         node.key,
@@ -201,11 +203,12 @@ fun ImageChapterEditorBody(
                     ) {
                         if (viewportHeight <= 0) return@LaunchedEffect
                         val layout = segmentLayout ?: return@LaunchedEffect
+                        val measuredTop = segmentTop ?: return@LaunchedEffect
                         val offset = displaySelectionStart.coerceIn(0, layout.layoutInput.text.length)
                         val cursor = runCatching { layout.getCursorRect(offset) }.getOrNull()
                             ?: return@LaunchedEffect
-                        val contentTop = segmentTop + cursor.top
-                        val contentBottom = segmentTop + cursor.bottom
+                        val contentTop = measuredTop + cursor.top
+                        val contentBottom = measuredTop + cursor.bottom
                         val visibleTop = scrollState.value
                         val visibleBottom = visibleTop + viewportHeight
                         val target = when {

@@ -12,9 +12,11 @@ import com.xtt.toolbox.data.model.ShelfType
 import com.xtt.toolbox.data.model.SourceType
 import com.xtt.toolbox.data.repository.SqliteBookRepository
 import com.xtt.toolbox.data.repository.SqliteReaderAnnotationRepository
+import com.xtt.toolbox.data.repository.SqliteShelfGroupRepository
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -50,6 +52,8 @@ class WritingDatabaseMigrationInstrumentedTest {
             assertEquals("legacy-book", book.bookId)
             assertEquals("旧版书", book.title)
             assertNull(book.originBookId)
+            assertNull(book.groupId)
+            assertFalse(book.isHidden)
 
             val document = repository.loadDocument("legacy-book")!!
             assertEquals("chapter-1", document.chapters.single().chapterId)
@@ -78,8 +82,47 @@ class WritingDatabaseMigrationInstrumentedTest {
     }
 
     @Test
-    fun originBookIdPersistsForEditableCopy() = runBlocking {
+    fun v8MigrationKeepsOldBookAndSupportsGroupsAndHiddenState() = runBlocking {
+        createV4Database()
         val helper = BookDatabaseHelper(context, databaseName)
+        try {
+            val repository = SqliteBookRepository(helper)
+            val groupRepository = SqliteShelfGroupRepository(helper, repository)
+            repository.reload()
+            groupRepository.reload()
+            val legacy = repository.getBook("legacy-book")!!
+            assertNull(legacy.groupId)
+            assertFalse(legacy.isHidden)
+
+            val readingGroup = groupRepository.create(ShelfType.READING, "阅读旧书组").getOrThrow()
+            groupRepository.create(ShelfType.WRITING, "写作组").getOrThrow()
+            repository.updateBookOrganization(
+                bookId = "legacy-book",
+                groupId = readingGroup.groupId,
+                isHidden = true,
+            ).getOrThrow()
+            groupRepository.setHidden(readingGroup.groupId, true).getOrThrow()
+
+            groupRepository.reload()
+            repository.reload()
+            val assigned = repository.getBook("legacy-book")!!
+            assertEquals(readingGroup.groupId, assigned.groupId)
+            assertTrue(assigned.isHidden)
+            assertEquals(2, groupRepository.groups.value.size)
+            assertTrue(groupRepository.groups.value.first { it.groupId == readingGroup.groupId }.isHidden)
+
+            groupRepository.delete(readingGroup.groupId).getOrThrow()
+            val ungrouped = repository.getBook("legacy-book")!!
+            assertNull(ungrouped.groupId)
+            assertTrue(ungrouped.isHidden)
+            assertEquals(1, groupRepository.groups.value.size)
+        } finally {
+            helper.close()
+        }
+    }
+
+    @Test
+    fun originBookIdPersistsForEditableCopy() = runBlocking {        val helper = BookDatabaseHelper(context, databaseName)
         try {
             val repository = SqliteBookRepository(helper)
             repository.reload()

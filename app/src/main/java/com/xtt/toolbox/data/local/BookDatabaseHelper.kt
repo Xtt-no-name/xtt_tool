@@ -14,6 +14,7 @@ import com.xtt.toolbox.data.model.ChapterDetectionSource
 import com.xtt.toolbox.data.model.Comment
 import com.xtt.toolbox.data.model.CommentType
 import com.xtt.toolbox.data.model.ReadingPosition
+import com.xtt.toolbox.data.model.ShelfGroup
 import com.xtt.toolbox.data.model.ShelfType
 import com.xtt.toolbox.data.model.SourceType
 import com.xtt.toolbox.domain.content.BookBlock
@@ -30,6 +31,7 @@ import java.io.File
  * 正文不写入数据库，只保存应用内部相对路径。数据库升级必须保留已有书籍；
  * 版本 2 新增书签/评论表，版本 3 新增 EPUB 章节/内容块/资源表和作者字段，
  * 版本 4 为内容块增加行内样式和块级排版字段，版本 5 增加可编辑副本来源字段。
+ * 版本 6 增加分卷，版本 7 增加写作每日统计，版本 8 增加书架分组与作品隐藏状态。
  */
 class BookDatabaseHelper(
     private val appContext: Context,
@@ -55,6 +57,7 @@ class BookDatabaseHelper(
         createAnnotationsSchema(db)
         createDocumentSchema(db)
         createWritingStatsSchema(db)
+        createShelfGroupsSchema(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -85,6 +88,17 @@ class BookDatabaseHelper(
         if (oldVersion < 7) {
             // 写作每日净新增；历史只从本版本启用后开始积累。
             createWritingStatsSchema(db)
+        }
+        if (oldVersion < 8) {
+            // 分组与隐藏状态；旧作品保持未分组、未隐藏。
+            addColumnIfMissing(db, TABLE_BOOKS, COL_GROUP_ID, "TEXT")
+            addColumnIfMissing(
+                db,
+                TABLE_BOOKS,
+                COL_IS_HIDDEN,
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            createShelfGroupsSchema(db)
         }
     }
 
@@ -123,6 +137,11 @@ class BookDatabaseHelper(
     private fun createWritingStatsSchema(db: SQLiteDatabase) {
         db.execSQL(CREATE_WRITING_DAILY_STATS_TABLE)
         db.execSQL(CREATE_WRITING_DAILY_STATS_DATE_INDEX)
+    }
+
+    private fun createShelfGroupsSchema(db: SQLiteDatabase) {
+        db.execSQL(CREATE_SHELF_GROUPS_TABLE)
+        db.execSQL(CREATE_SHELF_GROUPS_SHELF_INDEX)
     }
 
     /**
@@ -455,6 +474,92 @@ class BookDatabaseHelper(
             arrayOf(volumeId),
         ) == 1
 
+    fun readShelfGroups(): List<ShelfGroup> {
+        val result = mutableListOf<ShelfGroup>()
+        readableDatabase.query(
+            TABLE_SHELF_GROUPS,
+            null,
+            null,
+            null,
+            null,
+            null,
+            "$COL_SG_CREATED_AT ASC, $COL_SG_NAME COLLATE NOCASE ASC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) result += cursor.toShelfGroup()
+        }
+        return result
+    }
+
+    fun insertShelfGroup(group: ShelfGroup) {
+        writableDatabase.insertOrThrow(TABLE_SHELF_GROUPS, null, group.toValues())
+    }
+
+    fun renameShelfGroup(groupId: String, name: String, updatedAt: Long): Boolean =
+        writableDatabase.update(
+            TABLE_SHELF_GROUPS,
+            ContentValues().apply {
+                put(COL_SG_NAME, name)
+                put(COL_SG_UPDATED_AT, updatedAt)
+            },
+            "$COL_SG_GROUP_ID = ?",
+            arrayOf(groupId),
+        ) == 1
+
+    fun setShelfGroupHidden(groupId: String, hidden: Boolean, updatedAt: Long): Boolean =
+        writableDatabase.update(
+            TABLE_SHELF_GROUPS,
+            ContentValues().apply {
+                put(COL_SG_IS_HIDDEN, if (hidden) 1 else 0)
+                put(COL_SG_UPDATED_AT, updatedAt)
+            },
+            "$COL_SG_GROUP_ID = ?",
+            arrayOf(groupId),
+        ) == 1
+
+    /** 删除分组只解除组内作品归属，不删除作品或任何正文/批注。 */
+    fun deleteShelfGroupAndUngroupBooks(groupId: String): Boolean {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.update(
+                TABLE_BOOKS,
+                ContentValues().apply { putNull(COL_GROUP_ID) },
+                "$COL_GROUP_ID = ?",
+                arrayOf(groupId),
+            )
+            val deleted = db.delete(
+                TABLE_SHELF_GROUPS,
+                "$COL_SG_GROUP_ID = ?",
+                arrayOf(groupId),
+            ) == 1
+            db.setTransactionSuccessful()
+            return deleted
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** 只更新组织字段，避免改动正文、阅读位置或时间戳。 */
+    fun updateBookOrganization(bookId: String, groupId: String?, isHidden: Boolean): Int =
+        writableDatabase.update(
+            TABLE_BOOKS,
+            ContentValues().apply {
+                putNullable(COL_GROUP_ID, groupId)
+                put(COL_IS_HIDDEN, if (isHidden) 1 else 0)
+            },
+            "$COL_BOOK_ID = ?",
+            arrayOf(bookId),
+        )
+
+    /** 只更新最近打开时间；不改变正文、阅读位置、分组或隐藏状态。 */
+    fun touchLastOpenedAt(bookId: String, lastOpenedAt: Long): Int =
+        writableDatabase.update(
+            TABLE_BOOKS,
+            ContentValues().apply { put(COL_LAST_OPENED_AT, lastOpenedAt) },
+            "$COL_BOOK_ID = ?",
+            arrayOf(bookId),
+        )
+
     fun readResources(bookId: String): List<BookResource> {
         val result = mutableListOf<BookResource>()
         readableDatabase.query(
@@ -676,6 +781,8 @@ class BookDatabaseHelper(
         putNullable(COL_SOURCE_ENCODING, sourceEncoding)
         put(COL_FORMAT, format.name)
         putNullable(COL_ORIGIN_BOOK_ID, originBookId)
+        putNullable(COL_GROUP_ID, groupId)
+        put(COL_IS_HIDDEN, if (isHidden) 1 else 0)
         putNullable(COL_READING_CHAPTER_ID, readingPosition?.chapterId)
         put(COL_READING_OFFSET, readingPosition?.offset ?: 0)
         if (readingPosition?.percent == null) {
@@ -731,6 +838,8 @@ class BookDatabaseHelper(
                 getLong(getColumnIndexOrThrow(COL_LAST_OPENED_AT))
             },
             originBookId = getStringOrNull(COL_ORIGIN_BOOK_ID),
+            groupId = getStringOrNull(COL_GROUP_ID),
+            isHidden = getInt(getColumnIndexOrThrow(COL_IS_HIDDEN)) != 0,
         )
     }
 
@@ -778,6 +887,24 @@ class BookDatabaseHelper(
         title = getString(getColumnIndexOrThrow(COL_VOL_TITLE)),
         order = getInt(getColumnIndexOrThrow(COL_VOL_ORDER)),
         createdAt = getLong(getColumnIndexOrThrow(COL_VOL_CREATED_AT)),
+    )
+
+    private fun ShelfGroup.toValues(): ContentValues = ContentValues().apply {
+        put(COL_SG_GROUP_ID, groupId)
+        put(COL_SG_SHELF_TYPE, shelfType.name)
+        put(COL_SG_NAME, name)
+        put(COL_SG_IS_HIDDEN, if (isHidden) 1 else 0)
+        put(COL_SG_CREATED_AT, createdAt)
+        put(COL_SG_UPDATED_AT, updatedAt)
+    }
+
+    private fun Cursor.toShelfGroup(): ShelfGroup = ShelfGroup(
+        groupId = getString(getColumnIndexOrThrow(COL_SG_GROUP_ID)),
+        shelfType = ShelfType.valueOf(getString(getColumnIndexOrThrow(COL_SG_SHELF_TYPE))),
+        name = getString(getColumnIndexOrThrow(COL_SG_NAME)),
+        isHidden = getInt(getColumnIndexOrThrow(COL_SG_IS_HIDDEN)) != 0,
+        createdAt = getLong(getColumnIndexOrThrow(COL_SG_CREATED_AT)),
+        updatedAt = getLong(getColumnIndexOrThrow(COL_SG_UPDATED_AT)),
     )
 
     private fun Cursor.toChapter(): Chapter = Chapter(
@@ -863,7 +990,7 @@ class BookDatabaseHelper(
 
     companion object {
         const val DEFAULT_DATABASE_NAME = "xtt_library.db"
-        private const val DATABASE_VERSION = 7
+        private const val DATABASE_VERSION = 8
 
         private const val TABLE_BOOKS = "books"
         private const val COL_BOOK_ID = "book_id"
@@ -880,6 +1007,8 @@ class BookDatabaseHelper(
         private const val COL_SOURCE_ENCODING = "source_encoding"
         private const val COL_FORMAT = "format"
         private const val COL_ORIGIN_BOOK_ID = "origin_book_id"
+        private const val COL_GROUP_ID = "group_id"
+        private const val COL_IS_HIDDEN = "is_hidden"
         private const val COL_READING_CHAPTER_ID = "reading_chapter_id"
         private const val COL_READING_OFFSET = "reading_offset"
         private const val COL_READING_PERCENT = "reading_percent"
@@ -903,6 +1032,8 @@ class BookDatabaseHelper(
                 $COL_SOURCE_ENCODING TEXT,
                 $COL_FORMAT TEXT NOT NULL DEFAULT 'TXT',
                 $COL_ORIGIN_BOOK_ID TEXT,
+                $COL_GROUP_ID TEXT,
+                $COL_IS_HIDDEN INTEGER NOT NULL DEFAULT 0,
                 $COL_READING_CHAPTER_ID TEXT,
                 $COL_READING_OFFSET INTEGER NOT NULL DEFAULT 0,
                 $COL_READING_PERCENT REAL,
@@ -914,6 +1045,29 @@ class BookDatabaseHelper(
 
         private const val CREATE_CONTENT_HASH_INDEX =
             "CREATE INDEX IF NOT EXISTS idx_books_content_hash ON $TABLE_BOOKS($COL_CONTENT_HASH)"
+
+        private const val TABLE_SHELF_GROUPS = "shelf_groups"
+        private const val COL_SG_GROUP_ID = "group_id"
+        private const val COL_SG_SHELF_TYPE = "shelf_type"
+        private const val COL_SG_NAME = "group_name"
+        private const val COL_SG_IS_HIDDEN = "is_hidden"
+        private const val COL_SG_CREATED_AT = "created_at"
+        private const val COL_SG_UPDATED_AT = "updated_at"
+
+        private const val CREATE_SHELF_GROUPS_TABLE = """
+            CREATE TABLE IF NOT EXISTS $TABLE_SHELF_GROUPS (
+                $COL_SG_GROUP_ID TEXT PRIMARY KEY NOT NULL,
+                $COL_SG_SHELF_TYPE TEXT NOT NULL,
+                $COL_SG_NAME TEXT NOT NULL,
+                $COL_SG_IS_HIDDEN INTEGER NOT NULL DEFAULT 0,
+                $COL_SG_CREATED_AT INTEGER NOT NULL,
+                $COL_SG_UPDATED_AT INTEGER NOT NULL
+            )
+        """
+
+        private const val CREATE_SHELF_GROUPS_SHELF_INDEX =
+            "CREATE INDEX IF NOT EXISTS idx_shelf_groups_shelf ON " +
+                "$TABLE_SHELF_GROUPS($COL_SG_SHELF_TYPE, $COL_SG_CREATED_AT)"
 
         private const val TABLE_BOOKMARKS = "bookmarks"
         private const val COL_BM_BOOKMARK_ID = "bookmark_id"

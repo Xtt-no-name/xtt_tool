@@ -87,6 +87,10 @@ data class Book(
     val lastOpenedAt: Long? = null,
     /** 独立可编辑副本的来源书籍；普通草稿和原书为 null。 */
     val originBookId: String? = null,
+    /** 所属书架分组；null 表示未分组。 */
+    val groupId: String? = null,
+    /** 用户标记的隐藏状态；仅影响书架展示，不删除任何数据。 */
+    val isHidden: Boolean = false,
 ) {
     init {
         require(bookId.isNotBlank()) { "bookId 不能为空" }
@@ -120,6 +124,8 @@ data class Book(
             format: BookFormat = BookFormat.TXT,
             now: Long = System.currentTimeMillis(),
             originBookId: String? = null,
+            groupId: String? = null,
+            isHidden: Boolean = false,
         ): Book {
             val normalizedTitle = title.trim()
             require(normalizedTitle.isNotEmpty()) { "书名不能为空" }
@@ -142,6 +148,8 @@ data class Book(
                 updatedAt = now,
                 lastOpenedAt = null,
                 originBookId = originBookId,
+                groupId = groupId,
+                isHidden = isHidden,
             )
         }
     }

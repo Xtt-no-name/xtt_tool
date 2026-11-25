@@ -33,6 +33,8 @@ fun SettingsScreen(
     onReaderSettingsChange: (ReaderSettings) -> Unit,
     searchHistoryEnabled: Boolean,
     onSearchHistoryEnabledChange: (Boolean) -> Unit,
+    showHiddenContent: Boolean = true,
+    onShowHiddenContentChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -47,6 +49,35 @@ fun SettingsScreen(
                     ThemeChoice("跟随系统", ThemeMode.SYSTEM, themeMode, onThemeModeChange)
                     ThemeChoice("浅色模式", ThemeMode.LIGHT, themeMode, onThemeModeChange)
                     ThemeChoice("深色模式", ThemeMode.DARK, themeMode, onThemeModeChange)
+                }
+            }
+        }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                SectionHeader(title = "书架设置")
+                AppSectionCard {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = "显示隐藏内容",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                text = "开启后显示被标记为隐藏的作品和分组；关闭只影响书架显示，不会删除或改变隐藏状态。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = showHiddenContent,
+                            onCheckedChange = onShowHiddenContentChange,
+                        )
+                    }
                 }
             }
         }

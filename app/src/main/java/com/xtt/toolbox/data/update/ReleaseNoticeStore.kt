@@ -11,6 +11,17 @@ data class ReleaseNotes(
 
 object ReleaseNotesCatalog {
     fun forVersion(versionCode: Int): ReleaseNotes? = when (versionCode) {
+        7 -> ReleaseNotes(
+            versionCode = 7,
+            versionName = "1.0.6",
+            title = "本次更新内容",
+            items = listOf(
+                "阅读书架和写作书架支持分组管理，可用组内作品封面组成分组缩略图。",
+                "作品和分组支持隐藏；设置中的“显示隐藏内容”可控制书架是否展示。",
+                "应用内隐藏手机状态栏，页面可以使用屏幕顶部区域。",
+                "修复写作编辑器插入图片后继续输入时光标和页面跳转的问题。",
+            ),
+        )
         6 -> ReleaseNotes(
             versionCode = 6,
             versionName = "1.0.5",
